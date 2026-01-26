@@ -851,28 +851,30 @@ get_system_stats() {
     # Get System CPU (Live Delta) and RAM
     # Returns: "CPU_PERCENT RAM_USED RAM_TOTAL RAM_PCT"
     
-    # 1. System CPU (Live Delta)
+    # 1. System CPU (Stateful Average)
     local sys_cpu="0%"
+    local cpu_tmp="/tmp/conduit_cpu_state"
+    
     if [ -f /proc/stat ]; then
-        # Read 1
         read -r cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-        local total1=$((user + nice + system + idle + iowait + irq + softirq + steal))
-        local work1=$((user + nice + system + irq + softirq + steal))
+        local total_curr=$((user + nice + system + idle + iowait + irq + softirq + steal))
+        local work_curr=$((user + nice + system + irq + softirq + steal))
         
-        sleep 0.1
-        
-        # Read 2
-        read -r cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-        local total2=$((user + nice + system + idle + iowait + irq + softirq + steal))
-        local work2=$((user + nice + system + irq + softirq + steal))
-        
-        local total_delta=$((total2 - total1))
-        local work_delta=$((work2 - work1))
-        
-        if [ "$total_delta" -gt 0 ]; then
-            local cpu_usage=$(awk -v w="$work_delta" -v t="$total_delta" 'BEGIN { printf "%.1f", w * 100 / t }' 2>/dev/null || echo 0)
-            sys_cpu="${cpu_usage}%"
+        if [ -f "$cpu_tmp" ]; then
+            read -r total_prev work_prev < "$cpu_tmp"
+            local total_delta=$((total_curr - total_prev))
+            local work_delta=$((work_curr - work_prev))
+            
+            if [ "$total_delta" -gt 0 ]; then
+                local cpu_usage=$(awk -v w="$work_delta" -v t="$total_delta" 'BEGIN { printf "%.1f", w * 100 / t }' 2>/dev/null || echo 0)
+                sys_cpu="${cpu_usage}%"
+            fi
+        else
+            sys_cpu="Calc..." # First run calibration
         fi
+        
+        # Save current state for next run
+        echo "$total_curr $work_curr" > "$cpu_tmp"
     else
         sys_cpu="N/A"
     fi
@@ -907,13 +909,26 @@ show_live_stats() {
     docker logs -f --tail 2500 conduit 2>&1 | grep --line-buffered "\[STATS\]" | sed -u -e 's/.*\[STATS\]/[STATS]/' &
     local cmd_pid=$!
     
-    # Wait for any key press
-    # Redirect from /dev/tty ensures it works when the script is piped
-    read -n 1 -s -r < /dev/tty 2>/dev/null || true
+    # Trap Ctrl+C (SIGINT) to set a flag instead of exiting script
+    local stop_logs=0
+    trap 'stop_logs=1' SIGINT
+
+    # Wait for any key press (Polling) OR Ctrl+C
+    while kill -0 $cmd_pid 2>/dev/null; do
+        if [ "$stop_logs" -eq 1 ]; then
+            break
+        fi
+        if read -t 0.2 -n 1 -s -r < /dev/tty 2>/dev/null; then
+            break
+        fi
+    done
     
     # Kill the background process
     kill $cmd_pid 2>/dev/null
     wait $cmd_pid 2>/dev/null
+    
+    # Reset Trap
+    trap - SIGINT
 }
 
 show_peers() {
@@ -1021,7 +1036,39 @@ show_peers() {
     echo -ne "\033[?25h" # Show cursor
     tput rmcup 2>/dev/null || true
     rm -f /tmp/conduit_peers_current /tmp/conduit_peers_next
+    rm -f /tmp/conduit_peers_current /tmp/conduit_peers_next
     trap - SIGINT SIGTERM
+}
+
+get_net_speed() {
+    # Calculate System Network Speed (Active 0.5s Sample)
+    # Returns: "RX_MBPS TX_MBPS"
+    local iface=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5}')
+    [ -z "$iface" ] && iface=$(ip route list default 2>/dev/null | awk '{print $5}')
+    
+    if [ -n "$iface" ] && [ -f "/sys/class/net/$iface/statistics/rx_bytes" ]; then
+        local rx1=$(cat /sys/class/net/$iface/statistics/rx_bytes)
+        local tx1=$(cat /sys/class/net/$iface/statistics/tx_bytes)
+        
+        sleep 0.5
+        
+        local rx2=$(cat /sys/class/net/$iface/statistics/rx_bytes)
+        local tx2=$(cat /sys/class/net/$iface/statistics/tx_bytes)
+        
+        # Calculate Delta (Bytes)
+        local rx_delta=$((rx2 - rx1))
+        local tx_delta=$((tx2 - tx1))
+        
+        # Convert to Mbps: (bytes * 8 bits) / (0.5 sec * 1,000,000)
+        # Formula simplified: bytes * 16 / 1000000
+        
+        local rx_mbps=$(awk -v b="$rx_delta" 'BEGIN { printf "%.2f", (b * 16) / 1000000 }')
+        local tx_mbps=$(awk -v b="$tx_delta" 'BEGIN { printf "%.2f", (b * 16) / 1000000 }')
+        
+        echo "$rx_mbps $tx_mbps"
+    else
+        echo "0.00 0.00"
+    fi
 }
 
 show_status() {
@@ -1069,6 +1116,14 @@ show_status() {
         local sys_ram_total=$(echo "$sys_stats" | awk '{print $3}')
         local sys_ram_pct=$(echo "$sys_stats" | awk '{print $4}')
         
+        local sys_ram_pct=$(echo "$sys_stats" | awk '{print $4}')
+        
+        # New Metric: Network Speed (System Wide)
+        local net_speed=$(get_net_speed)
+        local rx_mbps=$(echo "$net_speed" | awk '{print $1}')
+        local tx_mbps=$(echo "$net_speed" | awk '{print $2}')
+        local net_display="↓ ${rx_mbps} Mbps  ↑ ${tx_mbps} Mbps"
+        
         if [ -n "$logs" ]; then
             local connecting=$(echo "$logs" | sed -n 's/.*Connecting:[[:space:]]*\([0-9]*\).*/\1/p')
             local connected=$(echo "$logs" | sed -n 's/.*Connected:[[:space:]]*\([0-9]*\).*/\1/p')
@@ -1098,7 +1153,7 @@ show_status() {
             echo -e "${CYAN}═══ Resource Usage ═══${NC}${EL}"
             printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "App:" "$app_cpu_display" "$app_ram"
             printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "System:" "$sys_cpu" "$sys_ram_used / $sys_ram_total"
-            printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "Total:" "$sys_cpu" "$sys_ram_pct"
+            printf "  %-8s Net: ${YELLOW}%-43s${NC}${EL}\n" "Total:" "$net_display"
             
         else
              echo -e "🚀 PSIPHON CONDUIT MANAGER v${VERSION}${EL}"
@@ -1108,7 +1163,7 @@ show_status() {
              echo -e "${CYAN}═══ Resource Usage ═══${NC}${EL}"
              printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "App:" "$app_cpu_display" "$app_ram"
              printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "System:" "$sys_cpu" "$sys_ram_used / $sys_ram_total"
-             printf "  %-8s CPU: ${YELLOW}%-20s${NC} | RAM: ${YELLOW}%-20s${NC}${EL}\n" "Total:" "$sys_cpu" "$sys_ram_pct"
+             printf "  %-8s Net: ${YELLOW}%-43s${NC}${EL}\n" "Total:" "$net_display"
              echo -e "${EL}"
              echo -e "  Stats:        ${YELLOW}Waiting for first stats...${NC}${EL}"
         fi
