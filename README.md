@@ -30,6 +30,8 @@ sudo bash conduit.sh
 
 ![Conduit Manager Menu](conduitmenu.png)
 
+![Live Peer Traffic](conduitpeers.png)
+
 ## Supported Distributions
 
 | Family | Distributions |
