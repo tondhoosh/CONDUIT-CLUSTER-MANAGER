@@ -622,18 +622,7 @@ check_and_offer_backup_restore() {
     fi
 }
 
-#═══════════════════════════════════════════════════════════════════════
-# run_conduit() - Start the Conduit Docker container
-#═══════════════════════════════════════════════════════════════════════
-# Pulls the official Conduit image, verifies its integrity using SHA256,
-# and starts the container with the configured settings.
-#
-# Container configuration:
-#   - Name: conduit
-#   - Restart policy: unless-stopped (auto-restart on crash/reboot)
-#   - Volume: conduit-data (stores node identity key)
-#   - Network: host mode (required for peer connections)
-#═══════════════════════════════════════════════════════════════════════
+# run_conduit() - Pull image, verify digest, and start container
 run_conduit() {
     log_info "Starting Conduit container..."
 
@@ -882,6 +871,23 @@ if ! command -v awk &>/dev/null; then
     echo -e "${YELLOW}Warning: awk not found. Some stats may not display correctly.${NC}"
 fi
 
+# Helper: Fix volume permissions for conduit user (uid 1000)
+fix_volume_permissions() {
+    docker run --rm -v conduit-data:/home/conduit/data alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+}
+
+# Helper: Start/recreate conduit container with current settings
+run_conduit_container() {
+    docker run -d \
+        --name conduit \
+        --restart unless-stopped \
+        -v conduit-data:/home/conduit/data \
+        --network host \
+        $CONDUIT_IMAGE \
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+}
+
 print_header() {
     echo -e "${CYAN}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
@@ -1127,18 +1133,7 @@ show_live_stats() {
     trap - SIGINT
 }
 
-#═══════════════════════════════════════════════════════════════════════
-# format_bytes() - Convert bytes to human-readable format
-#═══════════════════════════════════════════════════════════════════════
-# Arguments:
-#   $1 - Number of bytes to convert
-# Returns:
-#   Formatted string with appropriate unit (B, KB, MB, GB)
-# Notes:
-#   - Uses binary units (1 KB = 1024 bytes, not 1000)
-#   - Outputs 2 decimal places for KB/MB/GB
-#   - Returns "0 B" for empty or zero input
-#═══════════════════════════════════════════════════════════════════════
+# format_bytes() - Convert bytes to human-readable format (B, KB, MB, GB)
 format_bytes() {
     local bytes=$1
 
@@ -1163,22 +1158,7 @@ format_bytes() {
     fi
 }
 
-#═══════════════════════════════════════════════════════════════════════
-# show_peers() - Display live peer traffic statistics by country
-#═══════════════════════════════════════════════════════════════════════
-# This function captures live network traffic using tcpdump, resolves
-# IP addresses to countries using GeoIP, and displays:
-#   - Top 5 countries by download volume
-#   - Top 5 countries by upload volume
-#   - Per-country peer counts and traffic totals
-#
-# Dependencies: tcpdump, geoiplookup (geoip-bin package)
-# Temp files used:
-#   /tmp/conduit_peers_raw       - Raw IP traffic data from tcpdump
-#   /tmp/conduit_peers_current   - Marker file for display state
-#   /tmp/conduit_traffic_download - Countries sorted by download
-#   /tmp/conduit_traffic_upload   - Countries sorted by upload
-#═══════════════════════════════════════════════════════════════════════
+# show_peers() - Live peer traffic by country using tcpdump + GeoIP
 show_peers() {
     # Flag to control the main loop - set to 1 on user interrupt
     local stop_peers=0
@@ -1834,17 +1814,8 @@ start_conduit() {
     echo "Creating Conduit container..."
     docker volume create conduit-data 2>/dev/null || true
 
-    # Ensure volume has correct permissions for conduit user (uid 1000)
-    docker run --rm -v conduit-data:/home/conduit/data alpine \
-        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
-
-    docker run -d \
-        --name conduit \
-        --restart unless-stopped \
-        -v conduit-data:/home/conduit/data \
-        --network host \
-        $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+    fix_volume_permissions
+    run_conduit_container
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit started with stats enabled${NC}"
@@ -1871,18 +1842,8 @@ restart_conduit() {
         docker stop conduit 2>/dev/null || true
         docker rm conduit 2>/dev/null || true
 
-        # Ensure volume has correct permissions for conduit user (uid 1000)
-        docker run --rm -v conduit-data:/home/conduit/data alpine \
-            sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
-
-        # Recreate container with verbose flag for stats output
-        docker run -d \
-            --name conduit \
-            --restart unless-stopped \
-            -v conduit-data:/home/conduit/data \
-            --network host \
-            $CONDUIT_IMAGE \
-            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+        fix_volume_permissions
+        run_conduit_container
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Conduit restarted with stats enabled${NC}"
@@ -1967,16 +1928,8 @@ EOF
     sleep 2  # Wait for container cleanup to complete
     echo "Pulling latest image..."
     docker pull $CONDUIT_IMAGE 2>/dev/null || echo -e "${YELLOW}Could not pull latest image, using cached version${NC}"
-    # Ensure volume has correct permissions for conduit user (uid 1000)
-    docker run --rm -v conduit-data:/home/conduit/data alpine \
-        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
-    docker run -d \
-        --name conduit \
-        --restart unless-stopped \
-        -v conduit-data:/home/conduit/data \
-        --network host \
-        $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+    fix_volume_permissions
+    run_conduit_container
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Settings updated and Conduit restarted${NC}"
@@ -2038,9 +1991,7 @@ uninstall_all() {
         return 0
     fi
 
-    #───────────────────────────────────────────────────────────────
-    # Check for backup keys and ask user if they want to keep them
-    #───────────────────────────────────────────────────────────────
+    # Check for backup keys
     local keep_backups=false
     if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
         echo ""
@@ -2569,18 +2520,8 @@ update_conduit() {
     # Remove old container
     docker rm -f conduit 2>/dev/null || true
 
-    # Ensure volume has correct permissions for conduit user (uid 1000)
-    docker run --rm -v conduit-data:/home/conduit/data alpine \
-        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
-
-    # Create new container
-    docker run -d \
-        --name conduit \
-        --restart unless-stopped \
-        -v conduit-data:/home/conduit/data \
-        --network host \
-        $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+    fix_volume_permissions
+    run_conduit_container
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit updated and restarted${NC}"
