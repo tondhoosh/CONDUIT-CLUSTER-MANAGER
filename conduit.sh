@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.3                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.2                          ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -1784,32 +1784,41 @@ show_status() {
 
 start_conduit() {
     echo "Starting Conduit..."
+
+    # Check if container exists (running or stopped)
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        if docker start conduit 2>/dev/null; then
-            echo -e "${GREEN}✓ Conduit started${NC}"
-        else
-            echo -e "${RED}✗ Failed to start Conduit${NC}"
-            return 1
+        # Check if container is already running
+        if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+            echo -e "${GREEN}✓ Conduit is already running${NC}"
+            return 0
         fi
+
+        # Container exists but stopped - recreate it to ensure -v flag is included
+        echo "Recreating container with stats enabled..."
+        docker rm conduit 2>/dev/null || true
+    fi
+
+    # Create new container
+    echo "Creating Conduit container..."
+    docker volume create conduit-data 2>/dev/null || true
+
+    # Ensure volume has correct permissions for conduit user (uid 1000)
+    docker run --rm -v conduit-data:/home/conduit/data alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+
+    docker run -d \
+        --name conduit \
+        --restart unless-stopped \
+        -v conduit-data:/home/conduit/data \
+        --network host \
+        $CONDUIT_IMAGE \
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Conduit started with stats enabled${NC}"
     else
-        echo "Container not found. Creating new container..."
-        # Ensure volume has correct permissions for conduit user (uid 1000)
-        docker volume create conduit-data 2>/dev/null || true
-        docker run --rm -v conduit-data:/home/conduit/data alpine \
-            sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
-        docker run -d \
-            --name conduit \
-            --restart unless-stopped \
-            -v conduit-data:/home/conduit/data \
-            --network host \
-            $CONDUIT_IMAGE \
-            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✓ Conduit started${NC}"
-        else
-            echo -e "${RED}✗ Failed to start Conduit${NC}"
-            return 1
-        fi
+        echo -e "${RED}✗ Failed to start Conduit${NC}"
+        return 1
     fi
 }
 
@@ -1826,8 +1835,29 @@ stop_conduit() {
 restart_conduit() {
     echo "Restarting Conduit..."
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        docker restart conduit 2>/dev/null
-        echo -e "${GREEN}✓ Conduit restarted${NC}"
+        # Stop and remove the existing container
+        docker stop conduit 2>/dev/null || true
+        docker rm conduit 2>/dev/null || true
+
+        # Ensure volume has correct permissions for conduit user (uid 1000)
+        docker run --rm -v conduit-data:/home/conduit/data alpine \
+            sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+
+        # Recreate container with verbose flag for stats output
+        docker run -d \
+            --name conduit \
+            --restart unless-stopped \
+            -v conduit-data:/home/conduit/data \
+            --network host \
+            $CONDUIT_IMAGE \
+            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ Conduit restarted with stats enabled${NC}"
+        else
+            echo -e "${RED}✗ Failed to restart Conduit${NC}"
+            return 1
+        fi
     else
         echo -e "${RED}Conduit container not found. Use 'conduit start' to create it.${NC}"
         return 1
