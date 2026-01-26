@@ -2799,8 +2799,8 @@ main() {
         
         case $choice in
             1)
-                echo -e "${CYAN}Opening management menu...${NC}"
-                create_management_script >/dev/null 2>&1
+                echo -e "${CYAN}Updating management script and opening menu...${NC}"
+                create_management_script
                 exec "$INSTALL_DIR/conduit" menu
                 ;;
             2)
