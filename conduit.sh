@@ -1062,11 +1062,19 @@ show_live_stats() {
         local stats_json=$(docker run --rm -v conduit-data:/data alpine cat /data/stats.json 2>/dev/null || echo "{}")
 
         # Parse JSON values (using grep/sed since jq may not be available)
-        local connecting=$(echo "$stats_json" | grep -o '"connecting":[0-9]*' | grep -o '[0-9]*' || echo "0")
-        local connected=$(echo "$stats_json" | grep -o '"connected":[0-9]*' | grep -o '[0-9]*' || echo "0")
-        local total_up=$(echo "$stats_json" | grep -o '"totalBytesUp":[0-9]*' | grep -o '[0-9]*' || echo "0")
-        local total_down=$(echo "$stats_json" | grep -o '"totalBytesDown":[0-9]*' | grep -o '[0-9]*' || echo "0")
-        local uptime_sec=$(echo "$stats_json" | grep -o '"uptimeSeconds":[0-9]*' | grep -o '[0-9]*' || echo "0")
+        # Field names: connectingClients, connectedClients, totalBytesUp, totalBytesDown, uptimeSeconds
+        local connecting=$(echo "$stats_json" | grep -o '"connectingClients":[0-9]*' | grep -o '[0-9]*')
+        local connected=$(echo "$stats_json" | grep -o '"connectedClients":[0-9]*' | grep -o '[0-9]*')
+        local total_up=$(echo "$stats_json" | grep -o '"totalBytesUp":[0-9]*' | grep -o '[0-9]*')
+        local total_down=$(echo "$stats_json" | grep -o '"totalBytesDown":[0-9]*' | grep -o '[0-9]*')
+        local uptime_sec=$(echo "$stats_json" | grep -o '"uptimeSeconds":[0-9]*' | grep -o '[0-9]*')
+
+        # Default to 0 if empty
+        connecting=${connecting:-0}
+        connected=${connected:-0}
+        total_up=${total_up:-0}
+        total_down=${total_down:-0}
+        uptime_sec=${uptime_sec:-0}
 
         # Format uptime
         local uptime_fmt=""
