@@ -674,7 +674,7 @@ run_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
 
     # Wait for container to initialize
     sleep 3
@@ -1812,7 +1812,7 @@ start_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit started with stats enabled${NC}"
@@ -1850,7 +1850,7 @@ restart_conduit() {
             -v conduit-data:/home/conduit/data \
             --network host \
             $CONDUIT_IMAGE \
-            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Conduit restarted with stats enabled${NC}"
@@ -1944,7 +1944,7 @@ EOF
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Settings updated and Conduit restarted${NC}"
@@ -2548,7 +2548,7 @@ update_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit updated and restarted${NC}"
