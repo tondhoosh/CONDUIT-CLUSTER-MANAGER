@@ -1102,7 +1102,7 @@ show_live_stats() {
         # Clear screen and display
         clear
         print_header
-        echo -e "${YELLOW}Live Traffic Statistics${NC}"
+        echo -e "${YELLOW}Live Connection Stats${NC}"
         echo -e "${CYAN}Press ANY KEY to return to menu${NC}"
         echo ""
         echo "╔═══════════════════════════════════════════════════════════════════╗"
@@ -2008,11 +2008,11 @@ show_logs() {
         return 1
     fi
 
-    echo -e "${CYAN}Streaming logs (filtered, no [STATS])... Press Ctrl+C to stop${NC}"
+    echo -e "${CYAN}Streaming all logs (filtered, no [STATS])... Press Ctrl+C to stop${NC}"
     echo ""
 
-    # Stream docker logs, filtering out [STATS] lines for cleaner output
-    docker logs -f --tail 100 conduit 2>&1 | grep -v "\[STATS\]"
+    # Stream ALL docker logs, filtering out [STATS] lines for cleaner output
+    docker logs -f conduit 2>&1 | grep -v "\[STATS\]"
 }
 
 uninstall_all() {
@@ -2130,8 +2130,8 @@ show_menu() {
             echo -e "${CYAN}  MANAGEMENT OPTIONS${NC}"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
             echo -e "  1. 📈 View status dashboard"
-            echo -e "  2. 📜 View traffic history (Scrolling Logs)"
-            echo -e "  3. 📋 View raw logs (Filtered)"
+            echo -e "  2. 📊 Live connection stats"
+            echo -e "  3. 📋 View logs (filtered)"
             echo -e "  4. ⚙️  Change settings (max-clients, bandwidth)"
             echo ""
             echo -e "  5. 🔄 Update Conduit"
