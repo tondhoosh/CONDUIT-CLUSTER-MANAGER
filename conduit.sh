@@ -2008,11 +2008,11 @@ show_logs() {
         return 1
     fi
 
-    echo -e "${CYAN}Streaming raw logs... Press Ctrl+C to stop${NC}"
+    echo -e "${CYAN}Streaming logs (filtered, no [STATS])... Press Ctrl+C to stop${NC}"
     echo ""
 
-    # Simple raw log output - just stream docker logs directly
-    docker logs -f --tail 100 conduit 2>&1
+    # Stream docker logs, filtering out [STATS] lines for cleaner output
+    docker logs -f --tail 100 conduit 2>&1 | grep -v "\[STATS\]"
 }
 
 uninstall_all() {
