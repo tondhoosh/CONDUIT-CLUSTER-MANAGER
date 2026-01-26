@@ -674,7 +674,7 @@ run_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv --stats-file
 
     # Wait for container to initialize
     sleep 3
@@ -1043,55 +1043,78 @@ get_system_stats() {
 }
 
 show_live_stats() {
-    print_header
-    echo -e "${YELLOW}Live Traffic Statistics${NC}"
-    echo -e "${CYAN}Press ANY KEY to return to menu${NC}"
-    echo ""
-
     # Check if container is running first
     if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        print_header
         echo -e "${RED}Conduit is not running!${NC}"
         echo "Start it first with option 6 or 'conduit start'"
+        read -n 1 -s -r -p "Press any key to continue..." < /dev/tty 2>/dev/null || true
         return 1
     fi
 
-    # Check if [STATS] lines are available (requires -v flag on container)
-    local has_stats=$(docker logs --tail 50 conduit 2>&1 | grep -c "\[STATS\]" || true)
-    if [ "$has_stats" -eq 0 ]; then
-        echo -e "${YELLOW}No [STATS] output found.${NC}"
-        echo -e "The container may need to be restarted with verbose mode."
-        echo -e "Run: ${CYAN}conduit restart${NC} to enable stats output."
-        echo ""
-        echo -e "Showing recent logs instead:"
-        echo ""
-        docker logs --tail 20 conduit 2>&1
-        return 0
-    fi
+    # Trap Ctrl+C to exit cleanly
+    local stop_stats=0
+    trap 'stop_stats=1' SIGINT
 
-    # Run logs in background
-    # Stream logs, filter for [STATS], and strip everything before [STATS]
-    docker logs -f --tail 100 conduit 2>&1 | grep --line-buffered "\[STATS\]" | sed -u -e 's/.*\[STATS\]/[STATS]/' &
-    local cmd_pid=$!
+    # Live update loop
+    while [ "$stop_stats" -eq 0 ]; do
+        # Read stats from the JSON file in Docker volume
+        local stats_json=$(docker run --rm -v conduit-data:/data alpine cat /data/stats.json 2>/dev/null || echo "{}")
 
-    # Trap Ctrl+C (SIGINT) to set a flag instead of exiting script
-    local stop_logs=0
-    trap 'stop_logs=1' SIGINT
+        # Parse JSON values (using grep/sed since jq may not be available)
+        local connecting=$(echo "$stats_json" | grep -o '"connecting":[0-9]*' | grep -o '[0-9]*' || echo "0")
+        local connected=$(echo "$stats_json" | grep -o '"connected":[0-9]*' | grep -o '[0-9]*' || echo "0")
+        local total_up=$(echo "$stats_json" | grep -o '"totalBytesUp":[0-9]*' | grep -o '[0-9]*' || echo "0")
+        local total_down=$(echo "$stats_json" | grep -o '"totalBytesDown":[0-9]*' | grep -o '[0-9]*' || echo "0")
+        local uptime_sec=$(echo "$stats_json" | grep -o '"uptimeSeconds":[0-9]*' | grep -o '[0-9]*' || echo "0")
 
-    # Wait for any key press (Polling) OR Ctrl+C
-    while kill -0 $cmd_pid 2>/dev/null; do
-        if [ "$stop_logs" -eq 1 ]; then
-            break
+        # Format uptime
+        local uptime_fmt=""
+        if [ -n "$uptime_sec" ] && [ "$uptime_sec" -gt 0 ] 2>/dev/null; then
+            local days=$((uptime_sec / 86400))
+            local hours=$(( (uptime_sec % 86400) / 3600 ))
+            local mins=$(( (uptime_sec % 3600) / 60 ))
+            local secs=$((uptime_sec % 60))
+            if [ "$days" -gt 0 ]; then
+                uptime_fmt="${days}d ${hours}h ${mins}m"
+            elif [ "$hours" -gt 0 ]; then
+                uptime_fmt="${hours}h ${mins}m ${secs}s"
+            else
+                uptime_fmt="${mins}m ${secs}s"
+            fi
+        else
+            uptime_fmt="0s"
         fi
-        if read -t 0.2 -n 1 -s -r < /dev/tty 2>/dev/null; then
+
+        # Format bytes
+        local up_fmt=$(format_bytes "$total_up")
+        local down_fmt=$(format_bytes "$total_down")
+
+        # Clear screen and display
+        clear
+        print_header
+        echo -e "${YELLOW}Live Traffic Statistics${NC}"
+        echo -e "${CYAN}Press ANY KEY to return to menu${NC}"
+        echo ""
+        echo "╔═══════════════════════════════════════════════════════════════════╗"
+        echo "║                      CONDUIT STATISTICS                           ║"
+        echo "╠═══════════════════════════════════════════════════════════════════╣"
+        printf "║  %-20s %44s  ║\n" "Connecting:" "$connecting"
+        printf "║  %-20s %44s  ║\n" "Connected:" "$connected"
+        printf "║  %-20s %44s  ║\n" "Upload Total:" "$up_fmt"
+        printf "║  %-20s %44s  ║\n" "Download Total:" "$down_fmt"
+        printf "║  %-20s %44s  ║\n" "Uptime:" "$uptime_fmt"
+        echo "╚═══════════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo -e "${CYAN}Refreshing every 2 seconds...${NC}"
+
+        # Check for keypress with timeout
+        if read -t 2 -n 1 -s -r < /dev/tty 2>/dev/null; then
             break
         fi
     done
 
-    # Kill the background process
-    kill $cmd_pid 2>/dev/null
-    wait $cmd_pid 2>/dev/null
-
-    # Reset Trap
+    # Reset trap
     trap - SIGINT
 }
 
@@ -1812,7 +1835,7 @@ start_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv --stats-file
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit started with stats enabled${NC}"
@@ -1850,7 +1873,7 @@ restart_conduit() {
             -v conduit-data:/home/conduit/data \
             --network host \
             $CONDUIT_IMAGE \
-            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
+            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv --stats-file
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Conduit restarted with stats enabled${NC}"
@@ -1944,7 +1967,7 @@ EOF
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv --stats-file
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Settings updated and Conduit restarted${NC}"
@@ -2548,7 +2571,7 @@ update_conduit() {
         -v conduit-data:/home/conduit/data \
         --network host \
         $CONDUIT_IMAGE \
-        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -vv --stats-file
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Conduit updated and restarted${NC}"
