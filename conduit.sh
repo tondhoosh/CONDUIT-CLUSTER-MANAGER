@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.1                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.3                          ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,9 +31,11 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
+CONDUIT_IMAGE_DIGEST="sha256:a7c3acdc9ff4b5a2077a983765f0ac905ad11571321c61715181b1cf616379ca"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
+BACKUP_DIR="/opt/conduit/backups"
 FORCE_REINSTALL=false
 
 # Colors
@@ -506,9 +508,135 @@ install_docker() {
     fi
 }
 
+verify_image_digest() {
+    # Verify the Docker image SHA256 digest for security
+    local expected_digest="$1"
+    local image="$2"
+
+    log_info "Verifying image integrity..."
+
+    # Get the actual digest of the pulled image
+    local actual_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$image" 2>/dev/null | grep -o 'sha256:[a-f0-9]*')
+
+    if [ -z "$actual_digest" ]; then
+        log_warn "Could not verify image digest (image may not have digest metadata)"
+        return 0
+    fi
+
+    if [ "$actual_digest" = "$expected_digest" ]; then
+        log_success "Image integrity verified (SHA256 match)"
+        return 0
+    else
+        log_error "IMAGE INTEGRITY CHECK FAILED!"
+        log_error "Expected: $expected_digest"
+        log_error "Got:      $actual_digest"
+        log_error "This could indicate a compromised image. Aborting."
+        return 1
+    fi
+}
+
+#═══════════════════════════════════════════════════════════════════════
+# check_and_offer_backup_restore() - Check for existing backup keys
+#═══════════════════════════════════════════════════════════════════════
+# Called during installation to check if previous backup keys exist.
+# If found, prompts user to restore their node identity, allowing them
+# to maintain their existing node reputation on the Psiphon network.
+#
+# Backup location: /opt/conduit/backups/
+# Key file format: conduit_key_YYYYMMDD_HHMMSS.json
+#
+# Returns:
+#   0 - Backup was restored (or none existed)
+#   1 - User declined restore (fresh install)
+#═══════════════════════════════════════════════════════════════════════
+check_and_offer_backup_restore() {
+    # Check if backup directory exists and contains backup files
+    if [ ! -d "$BACKUP_DIR" ]; then
+        return 0  # No backup directory - proceed with fresh install
+    fi
+
+    # Find the most recent backup file
+    local latest_backup=$(ls -t "$BACKUP_DIR"/conduit_key_*.json 2>/dev/null | head -1)
+
+    if [ -z "$latest_backup" ]; then
+        return 0  # No backup files found - proceed with fresh install
+    fi
+
+    # Extract timestamp from filename for display
+    local backup_filename=$(basename "$latest_backup")
+    local backup_date=$(echo "$backup_filename" | sed -E 's/conduit_key_([0-9]{8})_([0-9]{6})\.json/\1/')
+    local backup_time=$(echo "$backup_filename" | sed -E 's/conduit_key_([0-9]{8})_([0-9]{6})\.json/\2/')
+
+    # Format date for display (YYYYMMDD -> YYYY-MM-DD)
+    local formatted_date="${backup_date:0:4}-${backup_date:4:2}-${backup_date:6:2}"
+    local formatted_time="${backup_time:0:2}:${backup_time:2:2}:${backup_time:4:2}"
+
+    # Prompt user about restoring the backup
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  📁 PREVIOUS NODE IDENTITY BACKUP FOUND${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  A backup of your node identity key was found:"
+    echo -e "    ${YELLOW}File:${NC} $backup_filename"
+    echo -e "    ${YELLOW}Date:${NC} $formatted_date $formatted_time"
+    echo ""
+    echo -e "  Restoring this key will:"
+    echo -e "    • Preserve your node's identity on the Psiphon network"
+    echo -e "    • Maintain any accumulated reputation"
+    echo -e "    • Allow peers to reconnect to your known node ID"
+    echo ""
+    echo -e "  ${YELLOW}Note:${NC} If you don't restore, a new identity will be generated."
+    echo ""
+
+    read -p "  Do you want to restore your previous node identity? (y/n): " restore_choice < /dev/tty || true
+
+    if [ "$restore_choice" = "y" ] || [ "$restore_choice" = "Y" ]; then
+        echo ""
+        log_info "Restoring node identity from backup..."
+
+        # Ensure the Docker volume exists
+        docker volume create conduit-data 2>/dev/null || true
+
+        # Copy the backup key to the Docker volume and fix permissions
+        # IMPORTANT: The Conduit container mounts conduit-data at /home/conduit/data
+        # so we must copy the key to that path inside the volume
+        # The container runs as uid 1000 (conduit user), so we must chown to 1000:1000
+        docker run --rm -v conduit-data:/home/conduit/data -v "$BACKUP_DIR":/backup alpine \
+            sh -c "cp /backup/$backup_filename /home/conduit/data/conduit_key.json && chown -R 1000:1000 /home/conduit/data"
+
+        if [ $? -eq 0 ]; then
+            log_success "Node identity restored successfully!"
+            echo ""
+            return 0
+        else
+            log_error "Failed to restore backup. Proceeding with fresh install."
+            echo ""
+            return 1
+        fi
+    else
+        echo ""
+        log_info "Skipping restore. A new node identity will be generated."
+        echo ""
+        return 1
+    fi
+}
+
+#═══════════════════════════════════════════════════════════════════════
+# run_conduit() - Start the Conduit Docker container
+#═══════════════════════════════════════════════════════════════════════
+# Pulls the official Conduit image, verifies its integrity using SHA256,
+# and starts the container with the configured settings.
+#
+# Container configuration:
+#   - Name: conduit
+#   - Restart policy: unless-stopped (auto-restart on crash/reboot)
+#   - Volume: conduit-data (stores node identity key)
+#   - Network: host mode (required for peer connections)
+#═══════════════════════════════════════════════════════════════════════
 run_conduit() {
     log_info "Starting Conduit container..."
-    
+
     # Check for existing conduit containers (any image containing conduit)
     local existing=$(docker ps -a --filter "ancestor=ghcr.io/ssmirr/conduit/conduit" --format "{{.Names}}")
     if [ -n "$existing" ] && [ "$existing" != "conduit" ]; then
@@ -516,17 +644,30 @@ run_conduit() {
         log_warn "Running multiple instances may cause port conflicts."
     fi
 
-    # Stop existing container with our name
+    # Stop and remove any existing container
     docker rm -f conduit 2>/dev/null || true
-    
-    # Pull image 
+
+    # Pull the official Conduit image from GitHub Container Registry
     log_info "Pulling Conduit image ($CONDUIT_IMAGE)..."
     if ! docker pull $CONDUIT_IMAGE; then
         log_error "Failed to pull Conduit image. Check your internet connection."
         exit 1
     fi
-    
-    # Run container with host networking
+
+    # Verify image integrity using SHA256 digest
+    # This ensures the image hasn't been tampered with
+    if ! verify_image_digest "$CONDUIT_IMAGE_DIGEST" "$CONDUIT_IMAGE"; then
+        exit 1
+    fi
+
+    # Ensure volume exists and has correct permissions for the conduit user (uid 1000)
+    docker volume create conduit-data 2>/dev/null || true
+    docker run --rm -v conduit-data:/home/conduit/data alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+
+    # Start the Conduit container
+    # --network host: Required for direct peer-to-peer connections
+    # -v conduit-data: Persistent volume for node identity key
     docker run -d \
         --name conduit \
         --restart unless-stopped \
@@ -534,9 +675,11 @@ run_conduit() {
         --network host \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
-    
+
+    # Wait for container to initialize
     sleep 3
-    
+
+    # Verify container is running
     if docker ps | grep -q conduit; then
         log_success "Conduit container is running"
         if [ "$BANDWIDTH" == "-1" ]; then
@@ -682,9 +825,11 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
+BACKUP_DIR="/opt/conduit/backups"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
+CONDUIT_IMAGE_DIGEST="sha256:a7c3acdc9ff4b5a2077a983765f0ac905ad11571321c61715181b1cf616379ca"
 
 # Colors
 RED='\033[0;31m'
@@ -899,16 +1044,35 @@ get_system_stats() {
 
 show_live_stats() {
     print_header
-    echo -e "${YELLOW}Reading traffic history...${NC}"
+    echo -e "${YELLOW}Live Traffic Statistics${NC}"
     echo -e "${CYAN}Press ANY KEY to return to menu${NC}"
     echo ""
-    
+
+    # Check if container is running first
+    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        echo -e "${RED}Conduit is not running!${NC}"
+        echo "Start it first with option 6 or 'conduit start'"
+        return 1
+    fi
+
+    # Check if [STATS] lines are available (requires -v flag on container)
+    local has_stats=$(docker logs --tail 50 conduit 2>&1 | grep -c "\[STATS\]" || true)
+    if [ "$has_stats" -eq 0 ]; then
+        echo -e "${YELLOW}No [STATS] output found.${NC}"
+        echo -e "The container may need to be restarted with verbose mode."
+        echo -e "Run: ${CYAN}conduit restart${NC} to enable stats output."
+        echo ""
+        echo -e "Showing recent logs instead:"
+        echo ""
+        docker logs --tail 20 conduit 2>&1
+        return 0
+    fi
+
     # Run logs in background
     # Stream logs, filter for [STATS], and strip everything before [STATS]
-    # Tail 2500 to reliably capture stats (performance cost is negligible)
-    docker logs -f --tail 2500 conduit 2>&1 | grep --line-buffered "\[STATS\]" | sed -u -e 's/.*\[STATS\]/[STATS]/' &
+    docker logs -f --tail 100 conduit 2>&1 | grep --line-buffered "\[STATS\]" | sed -u -e 's/.*\[STATS\]/[STATS]/' &
     local cmd_pid=$!
-    
+
     # Trap Ctrl+C (SIGINT) to set a flag instead of exiting script
     local stop_logs=0
     trap 'stop_logs=1' SIGINT
@@ -922,20 +1086,73 @@ show_live_stats() {
             break
         fi
     done
-    
+
     # Kill the background process
     kill $cmd_pid 2>/dev/null
     wait $cmd_pid 2>/dev/null
-    
+
     # Reset Trap
     trap - SIGINT
 }
 
+#═══════════════════════════════════════════════════════════════════════
+# format_bytes() - Convert bytes to human-readable format
+#═══════════════════════════════════════════════════════════════════════
+# Arguments:
+#   $1 - Number of bytes to convert
+# Returns:
+#   Formatted string with appropriate unit (B, KB, MB, GB)
+# Notes:
+#   - Uses binary units (1 KB = 1024 bytes, not 1000)
+#   - Outputs 2 decimal places for KB/MB/GB
+#   - Returns "0 B" for empty or zero input
+#═══════════════════════════════════════════════════════════════════════
+format_bytes() {
+    local bytes=$1
+
+    # Handle empty or zero input
+    if [ -z "$bytes" ] || [ "$bytes" -eq 0 ] 2>/dev/null; then
+        echo "0 B"
+        return
+    fi
+
+    # Convert based on size thresholds (using binary units)
+    # 1 GB = 1073741824 bytes (1024^3)
+    # 1 MB = 1048576 bytes (1024^2)
+    # 1 KB = 1024 bytes
+    if [ "$bytes" -ge 1073741824 ]; then
+        awk "BEGIN {printf \"%.2f GB\", $bytes/1073741824}"
+    elif [ "$bytes" -ge 1048576 ]; then
+        awk "BEGIN {printf \"%.2f MB\", $bytes/1048576}"
+    elif [ "$bytes" -ge 1024 ]; then
+        awk "BEGIN {printf \"%.2f KB\", $bytes/1024}"
+    else
+        echo "$bytes B"
+    fi
+}
+
+#═══════════════════════════════════════════════════════════════════════
+# show_peers() - Display live peer traffic statistics by country
+#═══════════════════════════════════════════════════════════════════════
+# This function captures live network traffic using tcpdump, resolves
+# IP addresses to countries using GeoIP, and displays:
+#   - Top 5 countries by download volume
+#   - Top 5 countries by upload volume
+#   - Per-country peer counts and traffic totals
+#
+# Dependencies: tcpdump, geoiplookup (geoip-bin package)
+# Temp files used:
+#   /tmp/conduit_peers_raw       - Raw IP traffic data from tcpdump
+#   /tmp/conduit_peers_current   - Marker file for display state
+#   /tmp/conduit_traffic_download - Countries sorted by download
+#   /tmp/conduit_traffic_upload   - Countries sorted by upload
+#═══════════════════════════════════════════════════════════════════════
 show_peers() {
+    # Flag to control the main loop - set to 1 on user interrupt
     local stop_peers=0
     trap 'stop_peers=1' SIGINT SIGTERM
-    
-    # Check dependencies again in case they were removed
+
+    # Verify required dependencies are installed
     if ! command -v tcpdump &>/dev/null || ! command -v geoiplookup &>/dev/null; then
         echo -e "${RED}Error: tcpdump or geoiplookup not found!${NC}"
         echo "Please re-run the main installer to fix dependencies."
@@ -943,101 +1160,460 @@ show_peers() {
         return 1
     fi
 
-    # Detect primary interface and local IP to filter it out
+    # Network interface detection
+    # Use "any" to capture on all interfaces
     local iface="any"
+
+    # Detect local IP address to determine traffic direction
+    # Method 1: Query the route to a public IP (most reliable)
+    # Method 2: Fallback to hostname -I
     local local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
     [ -z "$local_ip" ] && local_ip=$(hostname -I | awk '{print $1}')
-    
-    tput smcup 2>/dev/null || true
-    echo -ne "\033[?25l" # Hide cursor
-    clear
 
+    # Clean temporary working files (per-cycle data only)
+    rm -f /tmp/conduit_peers_current /tmp/conduit_peers_raw
+    rm -f /tmp/conduit_traffic_from /tmp/conduit_traffic_to
+    touch /tmp/conduit_traffic_from /tmp/conduit_traffic_to
+
+    # Persistent data directory - survives across option 9 sessions
+    local persist_dir="/opt/conduit/traffic_stats"
+    mkdir -p "$persist_dir"
+
+    # Get container start time to detect restarts
+    local container_start=$(docker inspect --format='{{.State.StartedAt}}' conduit 2>/dev/null | cut -d'.' -f1)
+    local stored_start=""
+    [ -f "$persist_dir/container_start" ] && stored_start=$(cat "$persist_dir/container_start")
+
+    # If container was restarted, reset all cumulative data
+    if [ "$container_start" != "$stored_start" ]; then
+        echo "$container_start" > "$persist_dir/container_start"
+        rm -f "$persist_dir/cumulative_data" "$persist_dir/cumulative_ips" "$persist_dir/session_start"
+    fi
+
+    # Cumulative data files persist until Conduit restarts
+    # Format: Country|TotalFrom|TotalTo (bytes received from / sent to)
+    [ ! -f "$persist_dir/cumulative_data" ] && touch "$persist_dir/cumulative_data"
+    # Format: Country|IP (one line per unique IP seen)
+    [ ! -f "$persist_dir/cumulative_ips" ] && touch "$persist_dir/cumulative_ips"
+
+    # Session start time - when we first started tracking (persists until Conduit restart)
+    if [ ! -f "$persist_dir/session_start" ]; then
+        date +%s > "$persist_dir/session_start"
+    fi
+    local session_start=$(cat "$persist_dir/session_start")
+
+    # Enter alternate screen buffer (preserves terminal history)
+    tput smcup 2>/dev/null || true
+    # Hide cursor for cleaner display
+    echo -ne "\033[?25l"
+
+    #═══════════════════════════════════════════════════════════════════
+    # Main display loop - runs until user presses a key
+    #═══════════════════════════════════════════════════════════════════
     while [ $stop_peers -eq 0 ]; do
-        if ! tput cup 0 0 2>/dev/null; then printf "\033[H"; fi
-        # Clear screen from cursor down to prevent ghosting from previous updates
-        tput ed 2>/dev/null || printf "\033[J"
-        
-        # Header Section
+        # Clear screen completely and move to top-left
+        clear
+        printf "\033[H"
+
+        #───────────────────────────────────────────────────────────────
+        # Header Section - Compact title bar with live status indicator
+        # Shows: Title, session duration, and [LIVE - last 15s] indicator
+        #───────────────────────────────────────────────────────────────
+        # Calculate how long this view session has been running
+        local now=$(date +%s)
+        local duration=$((now - session_start))
+        local dur_min=$((duration / 60))
+        local dur_sec=$((duration % 60))
+        local duration_str=$(printf "%02d:%02d" $dur_min $dur_sec)
+
         echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "║                    LIVE NETWORK ACTIVITY BY COUNTRY               ║"
+        echo -e "║                    LIVE PEER TRAFFIC BY COUNTRY                   ║"
         echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════╣${NC}"
         if [ -f /tmp/conduit_peers_current ]; then
+            # Data is available - show last update time
             local update_time=$(date '+%H:%M:%S')
-            # 1(║)+2(sp)+13(Last Update: )+8(time)+36(sp)+6([LIVE])+2(sp)+1(║) = 69 total
             echo -e "║  Last Update: ${update_time}                                    ${GREEN}[LIVE]${NC}  ║"
         else
-            echo -e "║  Status: ${YELLOW}Initial setup...${NC}                                         ║"
+            # Waiting for first data capture
+            echo -e "║  Status: ${YELLOW}Initializing...${NC}                                         ║"
         fi
         echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
         echo -e ""
-        
-        # Data Table Section
-        if [ -s /tmp/conduit_peers_current ]; then
-            echo -e "${BOLD}   Count | Country${NC}"
-            echo -e "   ──────|──────────────────────────────────────"
-            while read -r line; do
-                local p_count=$(echo "$line" | awk '{print $1}')
-                local country=$(echo "$line" | cut -d' ' -f2-)
-                # Pad country to prevent wrapping/junk
-                printf "   ${GREEN}%5s${NC} | ${CYAN}%-40s${NC}\n" "$p_count" "$country"
-            done < /tmp/conduit_peers_current
+
+        #───────────────────────────────────────────────────────────────
+        # Data Tables - Display TOP 10 countries by traffic volume
+        #
+        # "TRAFFIC FROM" = Data received from that country (incoming)
+        #                  These are peers connecting TO your Conduit node
+        # "TRAFFIC TO"   = Data sent to that country (outgoing)
+        #                  This is data your node sends back to peers
+        #
+        # Columns explained:
+        #   Total    = Cumulative bytes since this view started
+        #   Speed    = Current transfer rate (from last 15-second window)
+        #   IPs      = Unique IP addresses (Total seen / Currently active)
+        #
+        # Colors: GREEN = incoming traffic, YELLOW = outgoing traffic
+        #         #FreeIran = RED (solidarity highlight)
+        #───────────────────────────────────────────────────────────────
+        if [ -s /tmp/conduit_traffic_from ]; then
+            # Section 1: Top 10 countries by incoming traffic (data FROM them)
+            # This shows which countries have peers connecting to your node
+            echo -e "${GREEN}${BOLD}   📥 TOP 10 TRAFFIC FROM (peers connecting to you)${NC}"
+            echo -e "   ─────────────────────────────────────────────────────────────────────────"
+            printf "   ${BOLD}%-26s${NC}  ${GREEN}${BOLD}%10s   %12s${NC}   %-12s\n" "Country" "Total" "Speed" "IPs (all/now)"
+            echo -e "   ─────────────────────────────────────────────────────────────────────────"
+            # Read top 10 entries from incoming-traffic-sorted file
+            head -10 /tmp/conduit_traffic_from | while read -r line; do
+                # Parse pipe-delimited fields: Country|TotalFrom|TotalTo|SpeedFrom|SpeedTo|TotalIPs|ActiveIPs
+                local country=$(echo "$line" | cut -d'|' -f1)
+                local from_bytes=$(echo "$line" | cut -d'|' -f2)
+                local from_speed=$(echo "$line" | cut -d'|' -f4)
+                local total_ips=$(echo "$line" | cut -d'|' -f6)
+                local active_ips=$(echo "$line" | cut -d'|' -f7)
+                # Format bytes to human-readable (KB/MB/GB)
+                local from_fmt=$(format_bytes "$from_bytes")
+                local from_spd_fmt=$(format_bytes "$from_speed")/s
+                # Format IP counts - handle empty values
+                [ -z "$total_ips" ] && total_ips="0"
+                [ -z "$active_ips" ] && active_ips="0"
+                local ip_display="${total_ips}/${active_ips}"
+                # Print row: CYAN country, GREEN values (Total/Speed right-aligned, IPs left-aligned)
+                printf "   ${CYAN}%-26s${NC}  ${GREEN}${BOLD}%10s   %12s${NC}   %-12s\n" "$country" "$from_fmt" "$from_spd_fmt" "$ip_display"
+            done
+            echo ""
+
+            # Section 2: Top 10 countries by outgoing traffic (data TO them)
+            # This shows which countries you're sending the most data to
+            echo -e "${YELLOW}${BOLD}   📤 TOP 10 TRAFFIC TO (data sent to peers)${NC}"
+            echo -e "   ─────────────────────────────────────────────────────────────────────────"
+            printf "   ${BOLD}%-26s${NC}  ${YELLOW}${BOLD}%10s   %12s${NC}   %-12s\n" "Country" "Total" "Speed" "IPs (all/now)"
+            echo -e "   ─────────────────────────────────────────────────────────────────────────"
+            # Read top 10 entries from outgoing-traffic-sorted file
+            head -10 /tmp/conduit_traffic_to | while read -r line; do
+                # Parse pipe-delimited fields: Country|TotalFrom|TotalTo|SpeedFrom|SpeedTo|TotalIPs|ActiveIPs
+                local country=$(echo "$line" | cut -d'|' -f1)
+                local to_bytes=$(echo "$line" | cut -d'|' -f3)
+                local to_speed=$(echo "$line" | cut -d'|' -f5)
+                local total_ips=$(echo "$line" | cut -d'|' -f6)
+                local active_ips=$(echo "$line" | cut -d'|' -f7)
+                # Format bytes to human-readable (KB/MB/GB)
+                local to_fmt=$(format_bytes "$to_bytes")
+                local to_spd_fmt=$(format_bytes "$to_speed")/s
+                # Format IP counts - handle empty values
+                [ -z "$total_ips" ] && total_ips="0"
+                [ -z "$active_ips" ] && active_ips="0"
+                local ip_display="${total_ips}/${active_ips}"
+                # Print row: CYAN country, YELLOW values (Total/Speed right-aligned, IPs left-aligned)
+                printf "   ${CYAN}%-26s${NC}  ${YELLOW}${BOLD}%10s   %12s${NC}   %-12s\n" "$country" "$to_fmt" "$to_spd_fmt" "$ip_display"
+            done
         else
+            # No data yet - show waiting message with padding
             echo -e "   ${YELLOW}Waiting for first snapshot... (High traffic helps speed this up)${NC}"
-            for i in {1..8}; do echo ""; done
+            for i in {1..20}; do echo ""; done
         fi
-        
+
         echo -e ""
-        echo -e "${CYAN}─────────────────────────────────────────────────────────────────────${NC}"
-        
-        # Background capture starts here
-        # Removed -c limit to ensure we respect the 14s timeout even on high traffic
-        timeout 14 tcpdump -ni $iface '(tcp or udp)' 2>/dev/null | \
-            grep ' IP ' | \
-            sed -nE 's/.* IP ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})(\.[0-9]+)?[ >].*/\1/p' | \
-            grep -vE "^($local_ip|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)" | \
-            sort -u | \
-            xargs -n1 geoiplookup 2>/dev/null | \
-            awk -F: '/Country Edition/{print $2}' | \
-            sed 's/^ // ' | \
-            sed 's/Iran, Islamic Republic of/Iran - #FreeIran/' | \
-            sed 's/IP Address not found/Unknown\/Local/' | \
-            sort | \
-            uniq -c | \
-            sort -nr | \
-            head -20 > /tmp/conduit_peers_next 2>/dev/null &
-        
+        echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════${NC}"
+
+        #═══════════════════════════════════════════════════════════════════
+        # Background Traffic Capture
+        #═══════════════════════════════════════════════════════════════════
+        # Uses tcpdump to capture live network packets for 15 seconds
+        # tcpdump flags:
+        #   -n  : Don't resolve hostnames (faster)
+        #   -i  : Interface to capture on ("any" = all interfaces)
+        #   -q  : Quiet output (less verbose)
+        #
+        # The captured output is piped to awk which:
+        #   1. Extracts source and destination IP addresses
+        #   2. Extracts packet length from each line
+        #   3. Filters out private/local IP ranges (RFC 1918)
+        #   4. Determines traffic direction (from vs to)
+        #   5. Aggregates bytes per IP address
+        #   6. Outputs: IP|bytes_from_remote|bytes_to_remote
+        #
+        # Traffic direction naming (from your server's perspective):
+        #   "from" = bytes received FROM remote IP (remote -> local)
+        #   "to"   = bytes sent TO remote IP (local -> remote)
+        #═══════════════════════════════════════════════════════════════════
+        # Wrap pipeline in subshell so $! captures the whole pipeline PID, not just awk
+        # This ensures the progress indicator runs for the full 15-second capture
+        (
+            timeout 15 tcpdump -ni $iface -q '(tcp or udp)' 2>/dev/null | \
+            awk -v local_ip="$local_ip" '
+            # Portable awk script - works with mawk, gawk, and busybox awk
+            /IP/ {
+                # Parse tcpdump output to extract IPs and packet length
+                # Example format: "IP 192.168.1.1.443 > 8.8.8.8.12345: TCP, length 1460"
+                # Or: "IP 10.0.0.1.22 > 203.0.113.5.54321: UDP, length 64"
+
+                src = ""
+                dst = ""
+                len = 0
+
+                # Find the field containing "IP" and extract source/dest
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "IP") {
+                        # Next field is source IP.port
+                        src_field = $(i+1)
+                        # Field after ">" is dest IP.port
+                        for (j = i+2; j <= NF; j++) {
+                            if ($(j-1) == ">") {
+                                dst_field = $j
+                                # Remove trailing colon if present
+                                gsub(/:$/, "", dst_field)
+                                break
+                            }
+                        }
+                        break
+                    }
+                }
+
+                # Extract IP from IP.port format (remove last .port segment)
+                # Example: 192.168.1.1.443 -> 192.168.1.1
+                if (src_field != "") {
+                    n = split(src_field, parts, ".")
+                    if (n >= 4) {
+                        src = parts[1] "." parts[2] "." parts[3] "." parts[4]
+                    }
+                }
+                if (dst_field != "") {
+                    n = split(dst_field, parts, ".")
+                    if (n >= 4) {
+                        dst = parts[1] "." parts[2] "." parts[3] "." parts[4]
+                    }
+                }
+
+                # Extract packet length - look for "length N" pattern
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "length") {
+                        len = $(i+1) + 0
+                        break
+                    }
+                }
+                # Fallback: use last numeric field if no "length" found
+                if (len == 0) {
+                    for (i = NF; i > 0; i--) {
+                        if ($i ~ /^[0-9]+$/) {
+                            len = $i + 0
+                            break
+                        }
+                    }
+                }
+
+                # Skip if we could not parse IPs
+                if (src == "" && dst == "") next
+
+                # Filter out private/reserved IP ranges (RFC 1918 + others)
+                # 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8,
+                # 0.0.0.0/8, 169.254.0.0/16 (link-local)
+                if (src ~ /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/) src = ""
+                if (dst ~ /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/) dst = ""
+
+                # Determine traffic direction based on local IP
+                # "traffic_from" = bytes coming FROM remote (incoming to your server)
+                # "traffic_to"   = bytes going TO remote (outgoing from your server)
+                if (src == local_ip && dst != "" && dst != local_ip) {
+                    # Outgoing: packet going FROM local TO remote
+                    traffic_to[dst] += len
+                    ips[dst] = 1
+                } else if (dst == local_ip && src != "" && src != local_ip) {
+                    # Incoming: packet coming FROM remote TO local
+                    traffic_from[src] += len
+                    ips[src] = 1
+                } else if (src != "" && src != local_ip) {
+                    # Fallback: non-local source = incoming traffic
+                    traffic_from[src] += len
+                    ips[src] = 1
+                } else if (dst != "" && dst != local_ip) {
+                    # Fallback: non-local destination = outgoing traffic
+                    traffic_to[dst] += len
+                    ips[dst] = 1
+                }
+            }
+            END {
+                # Output aggregated data: IP|bytes_from|bytes_to
+                for (ip in ips) {
+                    from_bytes = traffic_from[ip] + 0  # Default to 0 if undefined
+                    to_bytes = traffic_to[ip] + 0
+                    print ip "|" from_bytes "|" to_bytes
+                }
+            }' > /tmp/conduit_peers_raw
+        ) 2>/dev/null &
+
+        # Store subshell PID for cleanup if user exits early
         local tcpdump_pid=$!
-        
-        # Indicator Loop
+
+        #───────────────────────────────────────────────────────────────
+        # Progress Indicator Loop - runs for exactly 15 seconds
+        # Shows animated dots while tcpdump captures data
+        # Checks for user keypress every second to allow early exit
+        #───────────────────────────────────────────────────────────────
         local count=0
-        while kill -0 $tcpdump_pid 2>/dev/null; do
+        while [ $count -lt 15 ]; do
             if read -t 1 -n 1 -s <> /dev/tty 2>/dev/null; then
                 stop_peers=1
                 kill $tcpdump_pid 2>/dev/null
                 break
             fi
             count=$((count + 1))
-            [ $count -gt 14 ] && count=1
             echo -ne "\r  [${YELLOW}"
             for ((i=0; i<count; i++)); do echo -n "•"; done
-            for ((i=count; i<14; i++)); do echo -n " "; done
+            for ((i=count; i<15; i++)); do echo -n " "; done
             echo -ne "${NC}] Capturing next update... (Any key to exit) \033[K"
         done
-        
+
+        # Wait for tcpdump to finish (should already be done after 15s)
+        wait $tcpdump_pid 2>/dev/null
+
+        # Exit loop if user requested stop
         if [ $stop_peers -eq 1 ]; then break; fi
-        
-        # Move next to current
-        mv /tmp/conduit_peers_next /tmp/conduit_peers_current 2>/dev/null
+
+        #═══════════════════════════════════════════════════════════════════
+        # GeoIP Resolution and Country Aggregation (Cumulative)
+        #═══════════════════════════════════════════════════════════════════
+        # Process the raw IP data:
+        #   1. Read each IP with its from/to bytes from this cycle
+        #   2. Resolve IP to country using geoiplookup
+        #   3. Add to cumulative totals (persisted in temp file)
+        #   4. Track unique IPs per country (cumulative and active)
+        #   5. Calculate bandwidth speed (bytes per second from 15s window)
+        #   6. Create sorted output files for display
+        #
+        # Traffic direction naming:
+        #   "from" = bytes received FROM remote IP (incoming to your server)
+        #   "to"   = bytes sent TO remote IP (outgoing from your server)
+        #═══════════════════════════════════════════════════════════════════
+        if [ -s /tmp/conduit_peers_raw ]; then
+            # Associative arrays for this capture cycle - MUST unset first!
+            # In bash, 'declare -A' does NOT clear existing arrays, causing accumulation bug
+            unset cycle_from cycle_to cycle_ips ip_to_country
+            declare -A cycle_from       # Bytes received FROM each country this cycle
+            declare -A cycle_to         # Bytes sent TO each country this cycle
+            declare -A cycle_ips        # IPs seen this cycle per country (for active count)
+            declare -A ip_to_country    # Map IP -> country for deduplication
+
+            # Process each IP from the raw capture data
+            # Raw format: IP|bytes_from|bytes_to
+            while IFS='|' read -r ip from_bytes to_bytes; do
+                [ -z "$ip" ] && continue
+
+                # Resolve IP to country using GeoIP database
+                local country_info=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ //')
+                [ -z "$country_info" ] && country_info="Unknown"
+
+                # Normalize certain country names for display
+                country_info=$(echo "$country_info" | sed 's/Iran, Islamic Republic of/Iran - #FreeIran/' | sed 's/Moldova, Republic of/Moldova/')
+
+                # Store IP to country mapping for later
+                ip_to_country["$ip"]="$country_info"
+
+                # Aggregate this cycle's traffic by country
+                cycle_from["$country_info"]=$((${cycle_from["$country_info"]:-0} + from_bytes))
+                cycle_to["$country_info"]=$((${cycle_to["$country_info"]:-0} + to_bytes))
+
+                # Track active IPs this cycle (append IP to country's IP list)
+                cycle_ips["$country_info"]="${cycle_ips["$country_info"]} $ip"
+            done < /tmp/conduit_peers_raw
+
+            # Load existing cumulative traffic data from persistent storage
+            unset cumul_from cumul_to
+            declare -A cumul_from
+            declare -A cumul_to
+            if [ -s "$persist_dir/cumulative_data" ]; then
+                while IFS='|' read -r country cfrom cto; do
+                    [ -z "$country" ] && continue
+                    cumul_from["$country"]=$cfrom
+                    cumul_to["$country"]=$cto
+                done < "$persist_dir/cumulative_data"
+            fi
+
+            # Add this cycle's traffic to cumulative totals
+            for country in "${!cycle_from[@]}"; do
+                cumul_from["$country"]=$((${cumul_from["$country"]:-0} + ${cycle_from["$country"]}))
+                cumul_to["$country"]=$((${cumul_to["$country"]:-0} + ${cycle_to["$country"]}))
+            done
+
+            # Save updated cumulative traffic data to persistent storage
+            > "$persist_dir/cumulative_data"
+            for country in "${!cumul_from[@]}"; do
+                echo "${country}|${cumul_from[$country]}|${cumul_to[$country]}" >> "$persist_dir/cumulative_data"
+            done
+
+            # Update cumulative IP tracking (add new IPs seen this cycle)
+            for ip in "${!ip_to_country[@]}"; do
+                local country="${ip_to_country[$ip]}"
+                # Check if this IP|Country combo already exists
+                if ! grep -q "^${country}|${ip}$" "$persist_dir/cumulative_ips" 2>/dev/null; then
+                    echo "${country}|${ip}" >> "$persist_dir/cumulative_ips"
+                fi
+            done
+
+            # Count total unique IPs per country (cumulative)
+            unset total_ips_count
+            declare -A total_ips_count
+            if [ -s "$persist_dir/cumulative_ips" ]; then
+                while IFS='|' read -r country ip; do
+                    [ -z "$country" ] && continue
+                    total_ips_count["$country"]=$((${total_ips_count["$country"]:-0} + 1))
+                done < "$persist_dir/cumulative_ips"
+            fi
+
+            # Count active IPs this cycle per country
+            unset active_ips_count
+            declare -A active_ips_count
+            for country in "${!cycle_ips[@]}"; do
+                # Count unique IPs in this cycle's IP list for this country
+                local unique_count=$(echo "${cycle_ips[$country]}" | tr ' ' '\n' | sort -u | grep -c '.')
+                active_ips_count["$country"]=$unique_count
+            done
+
+            # Generate sorted output with all metrics
+            # Format: Country|TotalFrom|TotalTo|SpeedFrom|SpeedTo|TotalIPs|ActiveIPs
+            > /tmp/conduit_traffic_from
+            > /tmp/conduit_traffic_to
+            for country in "${!cumul_from[@]}"; do
+                local total_from=${cumul_from[$country]}
+                local total_to=${cumul_to[$country]}
+                local cycle_from_val=${cycle_from["$country"]:-0}
+                local cycle_to_val=${cycle_to["$country"]:-0}
+                # Calculate speed (bytes per second) from 15-second capture
+                local speed_from=$((cycle_from_val / 15))
+                local speed_to=$((cycle_to_val / 15))
+                # Get IP counts
+                local total_ips=${total_ips_count["$country"]:-0}
+                local active_ips=${active_ips_count["$country"]:-0}
+                echo "${country}|${total_from}|${total_to}|${speed_from}|${speed_to}|${total_ips}|${active_ips}" >> /tmp/conduit_traffic_from
+            done
+
+            # Sort by total incoming traffic (field 2) descending
+            sort -t'|' -k2 -nr -o /tmp/conduit_traffic_from /tmp/conduit_traffic_from
+
+            # Copy and sort by total outgoing traffic (field 3) descending
+            cp /tmp/conduit_traffic_from /tmp/conduit_traffic_to
+            sort -t'|' -k3 -nr -o /tmp/conduit_traffic_to /tmp/conduit_traffic_to
+
+            # Touch marker file to indicate data is ready for display
+            touch /tmp/conduit_peers_current
+        fi
 
         echo -ne "\r  ${GREEN}✓ Update complete! Refreshing...${NC} \033[K"
         sleep 1
     done
-    
-    echo -ne "\033[?25h" # Show cursor
-    tput rmcup 2>/dev/null || true
-    rm -f /tmp/conduit_peers_current /tmp/conduit_peers_next
-    rm -f /tmp/conduit_peers_current /tmp/conduit_peers_next
-    trap - SIGINT SIGTERM
+    # End of main display loop
+
+    #═══════════════════════════════════════════════════════════════════
+    # Cleanup - restore terminal state and remove temp files
+    # Note: Persistent data in /opt/conduit/traffic_stats/ is NOT removed
+    #       It persists until Conduit container restarts
+    #═══════════════════════════════════════════════════════════════════
+    echo -ne "\033[?25h"  # Show cursor
+    tput rmcup 2>/dev/null || true  # Exit alternate screen buffer
+    # Remove only temporary working files (not persistent cumulative data)
+    rm -f /tmp/conduit_peers_current /tmp/conduit_peers_raw
+    rm -f /tmp/conduit_traffic_from /tmp/conduit_traffic_to
+    trap - SIGINT SIGTERM  # Remove signal handlers
 }
 
 get_net_speed() {
@@ -1217,6 +1793,10 @@ start_conduit() {
         fi
     else
         echo "Container not found. Creating new container..."
+        # Ensure volume has correct permissions for conduit user (uid 1000)
+        docker volume create conduit-data 2>/dev/null || true
+        docker run --rm -v conduit-data:/home/conduit/data alpine \
+            sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
         docker run -d \
             --name conduit \
             --restart unless-stopped \
@@ -1325,6 +1905,9 @@ EOF
     sleep 2  # Wait for container cleanup to complete
     echo "Pulling latest image..."
     docker pull $CONDUIT_IMAGE 2>/dev/null || echo -e "${YELLOW}Could not pull latest image, using cached version${NC}"
+    # Ensure volume has correct permissions for conduit user (uid 1000)
+    docker run --rm -v conduit-data:/home/conduit/data alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
     docker run -d \
         --name conduit \
         --restart unless-stopped \
@@ -1332,7 +1915,7 @@ EOF
         --network host \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
-    
+
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Settings updated and Conduit restarted${NC}"
         echo -e "  Max Clients: ${MAX_CLIENTS}"
@@ -1346,13 +1929,28 @@ EOF
     fi
 }
 
+#═══════════════════════════════════════════════════════════════════════
+# show_logs() - Display color-coded Docker logs
+#═══════════════════════════════════════════════════════════════════════
+# Colors log entries based on their type:
+#   [OK]     - Green   (successful operations)
+#   [INFO]   - Cyan    (informational messages)
+#   [STATS]  - Blue    (statistics)
+#   [WARN]   - Yellow  (warnings)
+#   [ERROR]  - Red     (errors)
+#   [DEBUG]  - Gray    (debug messages)
+#═══════════════════════════════════════════════════════════════════════
 show_logs() {
     if ! docker ps -a 2>/dev/null | grep -q conduit; then
         echo -e "${RED}Conduit container not found.${NC}"
         return 1
     fi
-    # Filter out noisy 'context deadline exceeded' and 'port mapping: closed' errors
-    docker logs -f --tail 100 conduit 2>&1 | grep -vE "context deadline exceeded|port mapping: closed"
+
+    echo -e "${CYAN}Streaming raw logs... Press Ctrl+C to stop${NC}"
+    echo ""
+
+    # Simple raw log output - just stream docker logs directly
+    docker logs -f --tail 100 conduit 2>&1
 }
 
 uninstall_all() {
@@ -1372,25 +1970,49 @@ uninstall_all() {
     echo -e "${RED}WARNING: This action cannot be undone!${NC}"
     echo ""
     read -p "Are you sure you want to uninstall? (type 'yes' to confirm): " confirm < /dev/tty || true
-    
+
     if [ "$confirm" != "yes" ]; then
         echo "Uninstall cancelled."
         return 0
     fi
-    
+
+    #───────────────────────────────────────────────────────────────
+    # Check for backup keys and ask user if they want to keep them
+    #───────────────────────────────────────────────────────────────
+    local keep_backups=false
+    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+        echo ""
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  📁 Backup keys found in: ${BACKUP_DIR}${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "You have backed up node identity keys. These allow you to restore"
+        echo "your node identity if you reinstall Conduit later."
+        echo ""
+        read -p "Do you want to KEEP your backup keys? (y/n): " keep_confirm < /dev/tty || true
+
+        if [ "$keep_confirm" = "y" ] || [ "$keep_confirm" = "Y" ]; then
+            keep_backups=true
+            echo -e "${GREEN}✓ Backup keys will be preserved.${NC}"
+        else
+            echo -e "${YELLOW}⚠ Backup keys will be deleted.${NC}"
+        fi
+        echo ""
+    fi
+
     echo ""
     echo -e "${BLUE}[INFO]${NC} Stopping Conduit container..."
     docker stop conduit 2>/dev/null || true
-    
+
     echo -e "${BLUE}[INFO]${NC} Removing Conduit container..."
     docker rm -f conduit 2>/dev/null || true
-    
+
     echo -e "${BLUE}[INFO]${NC} Removing Conduit Docker image..."
     docker rmi "$CONDUIT_IMAGE" 2>/dev/null || true
-    
+
     echo -e "${BLUE}[INFO]${NC} Removing Conduit data volume..."
     docker volume rm conduit-data 2>/dev/null || true
-    
+
     echo -e "${BLUE}[INFO]${NC} Removing auto-start service..."
     # Systemd
     systemctl stop conduit.service 2>/dev/null || true
@@ -1404,17 +2026,32 @@ uninstall_all() {
     update-rc.d conduit remove 2>/dev/null || true
     chkconfig conduit off 2>/dev/null || true
     rm -f /etc/init.d/conduit
-    
+
     echo -e "${BLUE}[INFO]${NC} Removing configuration files..."
-    rm -rf "$INSTALL_DIR"
+    if [ "$keep_backups" = true ]; then
+        # Keep backup directory, remove everything else in /opt/conduit
+        echo -e "${BLUE}[INFO]${NC} Preserving backup keys in ${BACKUP_DIR}..."
+        # Remove files in /opt/conduit but keep backups subdirectory
+        rm -f /opt/conduit/config.env 2>/dev/null || true
+        rm -f /opt/conduit/conduit 2>/dev/null || true
+        find /opt/conduit -maxdepth 1 -type f -delete 2>/dev/null || true
+    else
+        # Remove everything including backups
+        rm -rf /opt/conduit
+    fi
     rm -f /usr/local/bin/conduit
-    
+
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                    ✅ UNINSTALL COMPLETE!                         ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo "Conduit and all related components have been removed."
+    if [ "$keep_backups" = true ]; then
+        echo ""
+        echo -e "${CYAN}📁 Your backup keys are preserved in: ${BACKUP_DIR}${NC}"
+        echo "   You can use these to restore your node identity after reinstalling."
+    fi
     echo ""
     echo "Note: Docker itself was NOT removed."
     echo ""
@@ -1426,7 +2063,7 @@ show_menu() {
         if [ "$redraw" = true ]; then
             clear
             print_header
-            
+
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
             echo -e "${CYAN}  MANAGEMENT OPTIONS${NC}"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
@@ -1435,13 +2072,19 @@ show_menu() {
             echo -e "  3. 📋 View raw logs (Filtered)"
             echo -e "  4. ⚙️  Change settings (max-clients, bandwidth)"
             echo ""
-            echo -e "  5. ▶️  Start Conduit"
-            echo -e "  6. ⏹️  Stop Conduit"
-            echo -e "  7. 🔁 Restart Conduit"
+            echo -e "  5. 🔄 Update Conduit"
+            echo -e "  6. ▶️  Start Conduit"
+            echo -e "  7. ⏹️  Stop Conduit"
+            echo -e "  8. 🔁 Restart Conduit"
             echo ""
-            echo -e "  8. 🌍 View live peers by country (Live Map)"
+            echo -e "  9. 🌍 View live peers by country (Live Map)"
+            echo ""
+            echo -e "  h. 🩺 Health check"
+            echo -e "  b. 💾 Backup node key"
+            echo -e "  r. 📥 Restore node key"
             echo ""
             echo -e "  u. 🗑️  Uninstall (remove everything)"
+            echo -e "  v. ℹ️  Version info"
             echo -e "  0. 🚪 Exit"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
             echo ""
@@ -1468,27 +2111,52 @@ show_menu() {
                 redraw=true
                 ;;
             5)
-                start_conduit
+                update_conduit
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             6)
-                stop_conduit
+                start_conduit
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             7)
-                restart_conduit
+                stop_conduit
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             8)
+                restart_conduit
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
+                ;;
+            9)
                 show_peers
+                redraw=true
+                ;;
+            h|H)
+                health_check
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
+                ;;
+            b|B)
+                backup_key
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
+                ;;
+            r|R)
+                restore_key
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             u)
                 uninstall_all
                 exit 0
+                ;;
+            v|V)
+                show_version
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
                 ;;
             0)
                 echo "Exiting."
@@ -1499,7 +2167,7 @@ show_menu() {
                 ;;
             *)
                 echo -e "${RED}Invalid choice: ${NC}${YELLOW}$choice${NC}"
-                echo -e "${CYAN}Choose an option from 0-8, or 'u' to uninstall.${NC}"
+                echo -e "${CYAN}Choose an option from 0-9, h, b, r, u, or v.${NC}"
                 ;;
         esac
     done
@@ -1513,25 +2181,368 @@ show_help() {
     echo "  status    Show current status with resource usage"
     echo "  stats     View live statistics"
     echo "  logs      View raw Docker logs"
+    echo "  health    Run health check on Conduit container"
     echo "  start     Start Conduit container"
     echo "  stop      Stop Conduit container"
     echo "  restart   Restart Conduit container"
+    echo "  update    Update to latest Conduit image"
     echo "  settings  Change max-clients/bandwidth"
+    echo "  backup    Backup Conduit node identity key"
+    echo "  restore   Restore Conduit node identity from backup"
     echo "  uninstall Remove everything (container, data, service)"
     echo "  menu      Open interactive menu (default)"
+    echo "  version   Show version information"
     echo "  help      Show this help"
+}
+
+show_version() {
+    echo "Conduit Manager v${VERSION}"
+    echo "Image: ${CONDUIT_IMAGE}"
+    echo "Expected Digest: ${CONDUIT_IMAGE_DIGEST}"
+
+    # Show actual running image digest if available
+    if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        local actual=$(docker inspect --format='{{index .RepoDigests 0}}' "$CONDUIT_IMAGE" 2>/dev/null | grep -o 'sha256:[a-f0-9]*')
+        if [ -n "$actual" ]; then
+            echo "Running Digest:  ${actual}"
+        fi
+    fi
+}
+
+health_check() {
+    echo -e "${CYAN}═══ CONDUIT HEALTH CHECK ═══${NC}"
+    echo ""
+
+    local all_ok=true
+
+    # 1. Check if Docker is running
+    echo -n "Docker daemon:        "
+    if docker info &>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC} - Docker is not running"
+        all_ok=false
+    fi
+
+    # 2. Check if container exists
+    echo -n "Container exists:     "
+    if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC} - Container not found"
+        all_ok=false
+    fi
+
+    # 3. Check if container is running
+    echo -n "Container running:    "
+    if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC} - Container is stopped"
+        all_ok=false
+    fi
+
+    # 4. Check container health/restart count
+    echo -n "Restart count:        "
+    local restarts=$(docker inspect --format='{{.RestartCount}}' conduit 2>/dev/null)
+    if [ -n "$restarts" ]; then
+        if [ "$restarts" -eq 0 ]; then
+            echo -e "${GREEN}${restarts}${NC} (healthy)"
+        elif [ "$restarts" -lt 5 ]; then
+            echo -e "${YELLOW}${restarts}${NC} (some restarts)"
+        else
+            echo -e "${RED}${restarts}${NC} (excessive restarts)"
+            all_ok=false
+        fi
+    else
+        echo -e "${YELLOW}N/A${NC}"
+    fi
+
+    # 5. Check if Conduit has connected to network
+    echo -n "Network connection:   "
+    local connected=$(docker logs --tail 100 conduit 2>&1 | grep -c "Connected to Psiphon" || true)
+    if [ "$connected" -gt 0 ]; then
+        echo -e "${GREEN}OK${NC} (Connected to Psiphon network)"
+    else
+        local info_lines=$(docker logs --tail 100 conduit 2>&1 | grep -c "\[INFO\]" || true)
+        if [ "$info_lines" -gt 0 ]; then
+            echo -e "${YELLOW}CONNECTING${NC} - Establishing connection..."
+        else
+            echo -e "${YELLOW}WAITING${NC} - Starting up..."
+        fi
+    fi
+
+    # 5b. Check if STATS output is enabled (requires -v flag)
+    echo -n "Stats output:         "
+    local stats_count=$(docker logs --tail 100 conduit 2>&1 | grep -c "\[STATS\]" || true)
+    if [ "$stats_count" -gt 0 ]; then
+        echo -e "${GREEN}OK${NC} (${stats_count} entries)"
+    else
+        echo -e "${YELLOW}NONE${NC} - Run 'conduit restart' to enable"
+    fi
+
+    # 6. Check data volume
+    echo -n "Data volume:          "
+    if docker volume inspect conduit-data &>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC} - Volume not found"
+        all_ok=false
+    fi
+
+    # 7. Check node key exists
+    echo -n "Node identity key:    "
+    local mountpoint=$(docker volume inspect conduit-data --format '{{ .Mountpoint }}' 2>/dev/null)
+    if [ -n "$mountpoint" ] && [ -f "$mountpoint/conduit_key.json" ]; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}PENDING${NC} - Will be created on first run"
+    fi
+
+    # 8. Check network connectivity (port binding)
+    echo -n "Network (host mode):  "
+    local network_mode=$(docker inspect --format='{{.HostConfig.NetworkMode}}' conduit 2>/dev/null)
+    if [ "$network_mode" = "host" ]; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}WARN${NC} - Not using host network mode"
+    fi
+
+    echo ""
+    if [ "$all_ok" = true ]; then
+        echo -e "${GREEN}✓ All health checks passed${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Some health checks failed${NC}"
+        return 1
+    fi
+}
+
+backup_key() {
+    echo -e "${CYAN}═══ BACKUP CONDUIT NODE KEY ═══${NC}"
+    echo ""
+
+    local mountpoint=$(docker volume inspect conduit-data --format '{{ .Mountpoint }}' 2>/dev/null)
+
+    if [ -z "$mountpoint" ]; then
+        echo -e "${RED}Error: Could not find conduit-data volume${NC}"
+        return 1
+    fi
+
+    if [ ! -f "$mountpoint/conduit_key.json" ]; then
+        echo -e "${RED}Error: No node key found. Has Conduit been started at least once?${NC}"
+        return 1
+    fi
+
+    # Create backup directory
+    mkdir -p "$INSTALL_DIR/backups"
+
+    # Create timestamped backup
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local backup_file="$INSTALL_DIR/backups/conduit_key_${timestamp}.json"
+
+    cp "$mountpoint/conduit_key.json" "$backup_file"
+    chmod 600 "$backup_file"
+
+    # Get node ID for display
+    local node_id=$(cat "$mountpoint/conduit_key.json" | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n')
+
+    echo -e "${GREEN}✓ Backup created successfully${NC}"
+    echo ""
+    echo "  Backup file: ${CYAN}${backup_file}${NC}"
+    echo "  Node ID:     ${CYAN}${node_id}${NC}"
+    echo ""
+    echo -e "${YELLOW}Important:${NC} Store this backup securely. It contains your node's"
+    echo "private key which identifies your node on the Psiphon network."
+    echo ""
+
+    # List all backups
+    echo "All backups:"
+    ls -la "$INSTALL_DIR/backups/"*.json 2>/dev/null | awk '{print "  " $9 " (" $5 " bytes)"}'
+}
+
+restore_key() {
+    echo -e "${CYAN}═══ RESTORE CONDUIT NODE KEY ═══${NC}"
+    echo ""
+
+    local backup_dir="$INSTALL_DIR/backups"
+
+    # Check if backup directory exists and has files
+    if [ ! -d "$backup_dir" ] || [ -z "$(ls -A $backup_dir/*.json 2>/dev/null)" ]; then
+        echo -e "${YELLOW}No backups found in ${backup_dir}${NC}"
+        echo ""
+        echo "To restore from a custom path, provide the file path:"
+        read -p "  Backup file path (or press Enter to cancel): " custom_path < /dev/tty || true
+
+        if [ -z "$custom_path" ]; then
+            echo "Restore cancelled."
+            return 0
+        fi
+
+        if [ ! -f "$custom_path" ]; then
+            echo -e "${RED}Error: File not found: ${custom_path}${NC}"
+            return 1
+        fi
+
+        backup_file="$custom_path"
+    else
+        # List available backups
+        echo "Available backups:"
+        local i=1
+        local backups=()
+        for f in "$backup_dir"/*.json; do
+            backups+=("$f")
+            local node_id=$(cat "$f" | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n' 2>/dev/null)
+            echo "  ${i}. $(basename "$f") - Node: ${node_id:-unknown}"
+            i=$((i + 1))
+        done
+        echo ""
+
+        read -p "  Select backup number (or 0 to cancel): " selection < /dev/tty || true
+
+        if [ "$selection" = "0" ] || [ -z "$selection" ]; then
+            echo "Restore cancelled."
+            return 0
+        fi
+
+        if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#backups[@]} ]; then
+            echo -e "${RED}Invalid selection${NC}"
+            return 1
+        fi
+
+        backup_file="${backups[$((selection - 1))]}"
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Warning:${NC} This will replace the current node key."
+    echo "The container will be stopped and restarted."
+    echo ""
+    read -p "Proceed with restore? [y/N] " confirm < /dev/tty || true
+
+    if [[ ! "$confirm" =~ ^[Yy] ]]; then
+        echo "Restore cancelled."
+        return 0
+    fi
+
+    # Stop container
+    echo ""
+    echo "Stopping Conduit..."
+    docker stop conduit 2>/dev/null || true
+
+    # Get volume mountpoint
+    local mountpoint=$(docker volume inspect conduit-data --format '{{ .Mountpoint }}' 2>/dev/null)
+
+    if [ -z "$mountpoint" ]; then
+        echo -e "${RED}Error: Could not find conduit-data volume${NC}"
+        return 1
+    fi
+
+    # Backup current key if exists
+    if [ -f "$mountpoint/conduit_key.json" ]; then
+        local timestamp=$(date '+%Y%m%d_%H%M%S')
+        mkdir -p "$backup_dir"
+        cp "$mountpoint/conduit_key.json" "$backup_dir/conduit_key_pre_restore_${timestamp}.json"
+        echo "  Current key backed up to: conduit_key_pre_restore_${timestamp}.json"
+    fi
+
+    # Restore the key
+    cp "$backup_file" "$mountpoint/conduit_key.json"
+    chmod 600 "$mountpoint/conduit_key.json"
+
+    # Restart container
+    echo "Starting Conduit..."
+    docker start conduit 2>/dev/null
+
+    local node_id=$(cat "$mountpoint/conduit_key.json" | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n')
+
+    echo ""
+    echo -e "${GREEN}✓ Node key restored successfully${NC}"
+    echo "  Node ID: ${CYAN}${node_id}${NC}"
+}
+
+update_conduit() {
+    echo -e "${CYAN}═══ UPDATE CONDUIT ═══${NC}"
+    echo ""
+
+    echo "Current image: ${CONDUIT_IMAGE}"
+    echo ""
+
+    # Check for updates by pulling
+    echo "Checking for updates..."
+    if ! docker pull $CONDUIT_IMAGE 2>/dev/null; then
+        echo -e "${RED}Failed to check for updates. Check your internet connection.${NC}"
+        return 1
+    fi
+
+    # Verify digest
+    local actual_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$CONDUIT_IMAGE" 2>/dev/null | grep -o 'sha256:[a-f0-9]*')
+
+    echo ""
+    echo "Expected digest: ${CONDUIT_IMAGE_DIGEST}"
+    echo "Pulled digest:   ${actual_digest:-unknown}"
+
+    if [ -n "$actual_digest" ] && [ "$actual_digest" != "$CONDUIT_IMAGE_DIGEST" ]; then
+        echo ""
+        echo -e "${YELLOW}Warning:${NC} Pulled image has different digest than expected."
+        echo "This could mean:"
+        echo "  1. A new version is available (update the script)"
+        echo "  2. Image integrity issue (proceed with caution)"
+        echo ""
+        read -p "Continue anyway? [y/N] " confirm < /dev/tty || true
+        if [[ ! "$confirm" =~ ^[Yy] ]]; then
+            echo "Update cancelled."
+            return 0
+        fi
+    fi
+
+    echo ""
+    echo "Recreating container with updated image..."
+
+    # Save if container was running
+    local was_running=false
+    if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        was_running=true
+    fi
+
+    # Remove old container
+    docker rm -f conduit 2>/dev/null || true
+
+    # Ensure volume has correct permissions for conduit user (uid 1000)
+    docker run --rm -v conduit-data:/home/conduit/data alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+
+    # Create new container
+    docker run -d \
+        --name conduit \
+        --restart unless-stopped \
+        -v conduit-data:/home/conduit/data \
+        --network host \
+        $CONDUIT_IMAGE \
+        start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" -v
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Conduit updated and restarted${NC}"
+    else
+        echo -e "${RED}✗ Failed to start updated container${NC}"
+        return 1
+    fi
 }
 
 case "${1:-menu}" in
     status)   show_status ;;
     stats)    show_live_stats ;;
     logs)     show_logs ;;
+    health)   health_check ;;
     start)    start_conduit ;;
     stop)     stop_conduit ;;
     restart)  restart_conduit ;;
+    update)   update_conduit ;;
     peers)    show_peers ;;
     settings) change_settings ;;
+    backup)   backup_key ;;
+    restore)  restore_key ;;
     uninstall) uninstall_all ;;
+    version|-v|--version) show_version ;;
     help|-h|--help) show_help ;;
     menu|*)   show_menu ;;
 esac
@@ -1751,38 +2762,55 @@ main() {
         esac
     fi
 
-    # Interactive settings prompt
+    # Interactive settings prompt (max-clients, bandwidth)
     prompt_settings
-    
+
     echo ""
     echo -e "${CYAN}Starting installation...${NC}"
     echo ""
-    
-    # Installation steps
-    log_info "Step 1/4: Installing Docker..."
+
+    #───────────────────────────────────────────────────────────────
+    # Installation Steps (5 steps if backup exists, otherwise 4)
+    #───────────────────────────────────────────────────────────────
+
+    # Step 1: Install Docker (if not already installed)
+    log_info "Step 1/5: Installing Docker..."
     install_docker
-    
+
     echo ""
-    log_info "Step 2/4: Starting Conduit..."
+
+    # Step 2: Check for and optionally restore backup keys
+    # This preserves node identity if user had a previous installation
+    log_info "Step 2/5: Checking for previous node identity..."
+    check_and_offer_backup_restore
+
+    echo ""
+
+    # Step 3: Start Conduit container
+    log_info "Step 3/5: Starting Conduit..."
     run_conduit
     
     echo ""
-    log_info "Step 3/4: Setting up auto-start..."
+
+    # Step 4: Save settings and configure auto-start service
+    log_info "Step 4/5: Setting up auto-start..."
     save_settings
     setup_autostart
-    
+
     echo ""
-    log_info "Step 4/4: Creating management script..."
+
+    # Step 5: Create the 'conduit' CLI management script
+    log_info "Step 5/5: Creating management script..."
     create_management_script
-    
+
     print_summary
-    
-        read -p "View live statistics now? [Y/n] " view_stats < /dev/tty || true
-    if [[ ! "$view_stats" =~ ^[Nn] ]]; then
-        "$INSTALL_DIR/conduit" stats
+
+    read -p "Open management menu now? [Y/n] " open_menu < /dev/tty || true
+    if [[ ! "$open_menu" =~ ^[Nn] ]]; then
+        "$INSTALL_DIR/conduit" menu
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 1.0.1
+# REACHED END OF SCRIPT - VERSION 1.0.2
 # ###############################################################################
 main "$@"

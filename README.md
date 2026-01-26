@@ -21,7 +21,11 @@ sudo bash conduit.sh
 - **Multi-Distro Support** - Works on Ubuntu, Debian, CentOS, Fedora, Arch, Alpine, openSUSE
 - **Auto-Start on Boot** - Supports systemd, OpenRC, and SysVinit
 - **Live Monitoring** - Real-time connection stats with CPU/RAM monitoring
+- **Live Peer Traffic** - Real-time traffic monitoring by country with GeoIP lookup
 - **Easy Management** - Powerful CLI commands or interactive menu
+- **Security Verification** - SHA256 checksum verification for Docker images
+- **Backup & Restore** - Backup and restore your node identity key
+- **Health Checks** - Comprehensive diagnostics for troubleshooting
 - **Complete Uninstall** - Clean removal of all components
 
 ![Conduit Manager Menu](conduitmenu.png)
@@ -45,6 +49,8 @@ After installation, use the `conduit` command:
 conduit status       # Show current status and resource usage
 conduit stats        # View live statistics (real-time)
 conduit logs         # View raw Docker logs
+conduit health       # Run health check diagnostics
+conduit peers        # Live peer traffic by country (GeoIP)
 ```
 
 ### Container Management
@@ -52,6 +58,7 @@ conduit logs         # View raw Docker logs
 conduit start        # Start the Conduit container
 conduit stop         # Stop the Conduit container
 conduit restart      # Restart the Conduit container
+conduit update       # Update to the latest Conduit image
 ```
 
 ### Configuration
@@ -60,9 +67,16 @@ conduit settings     # Change max-clients and bandwidth
 conduit menu         # Open interactive management menu
 ```
 
+### Backup & Restore
+```bash
+conduit backup       # Backup your node identity key
+conduit restore      # Restore node identity from backup
+```
+
 ### Maintenance
 ```bash
 conduit uninstall    # Remove all components
+conduit version      # Show version information
 conduit help         # Show help message
 ```
 
@@ -109,9 +123,16 @@ sudo bash conduit.sh --help
 
 1. **Detection** - Identifies your Linux distribution and init system
 2. **Docker Setup** - Installs Docker if not present
-3. **Container Deployment** - Pulls and runs the official Psiphon Conduit image
-4. **Auto-Start Configuration** - Sets up systemd/OpenRC/SysVinit service
-5. **CLI Installation** - Creates the `conduit` management command
+3. **Security Verification** - Verifies Docker image SHA256 digest
+4. **Container Deployment** - Pulls and runs the official Psiphon Conduit image
+5. **Auto-Start Configuration** - Sets up systemd/OpenRC/SysVinit service
+6. **CLI Installation** - Creates the `conduit` management command
+
+## Security
+
+- **Image Verification**: Every Docker image pull is verified against a known SHA256 digest
+- **Secure Backups**: Node identity keys are stored with restricted permissions (600)
+- **No Telemetry**: The manager collects no data and sends nothing externally
 
 ---
 
@@ -142,7 +163,11 @@ sudo bash conduit.sh
 - **پشتیبانی از توزیع‌های مختلف** - اوبونتو، دبیان، سنت‌اواس، فدورا، آرچ، آلپاین
 - **راه‌اندازی خودکار** - پس از ریستارت سرور، سرویس به صورت خودکار اجرا می‌شود
 - **مانیتورینگ زنده** - نمایش تعداد کاربران متصل و مصرف منابع
+- **مانیتورینگ ترافیک** - نمایش لحظه‌ای ترافیک بر اساس کشور با GeoIP
 - **مدیریت آسان** - دستورات قدرتمند CLI یا منوی تعاملی
+- **تأیید امنیتی** - بررسی SHA256 برای تصاویر داکر
+- **پشتیبان‌گیری و بازیابی** - پشتیبان‌گیری و بازیابی کلید هویت نود
+- **بررسی سلامت** - تشخیص جامع برای عیب‌یابی
 - **حذف کامل** - پاکسازی تمام فایل‌ها و تنظیمات
 
 ## دستورات CLI
@@ -152,6 +177,8 @@ sudo bash conduit.sh
 conduit status       # نمایش وضعیت و مصرف منابع
 conduit stats        # آمار زنده (لحظه‌ای)
 conduit logs         # لاگ‌های داکر
+conduit health       # بررسی سلامت سیستم
+conduit peers        # ترافیک بر اساس کشور (GeoIP)
 ```
 
 ### مدیریت کانتینر
@@ -159,6 +186,7 @@ conduit logs         # لاگ‌های داکر
 conduit start        # شروع کانتینر
 conduit stop         # توقف کانتینر
 conduit restart      # ریستارت کانتینر
+conduit update       # به‌روزرسانی به آخرین نسخه
 ```
 
 ### پیکربندی
@@ -167,9 +195,16 @@ conduit settings     # تغییر تنظیمات
 conduit menu         # منوی تعاملی
 ```
 
+### پشتیبان‌گیری و بازیابی
+```bash
+conduit backup       # پشتیبان‌گیری از کلید نود
+conduit restore      # بازیابی کلید نود از پشتیبان
+```
+
 ### نگهداری
 ```bash
 conduit uninstall    # حذف کامل
+conduit version      # نمایش نسخه
 conduit help         # راهنما
 ```
 
