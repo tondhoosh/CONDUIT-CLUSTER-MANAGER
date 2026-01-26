@@ -870,7 +870,7 @@ get_system_stats() {
         local work_delta=$((work2 - work1))
         
         if [ "$total_delta" -gt 0 ]; then
-            local cpu_usage=$((work_delta * 100 / total_delta))
+            local cpu_usage=$(awk -v w="$work_delta" -v t="$total_delta" 'BEGIN { printf "%.1f", w * 100 / t }' 2>/dev/null || echo 0)
             sys_cpu="${cpu_usage}%"
         fi
     else
@@ -909,7 +909,7 @@ show_live_stats() {
     
     # Wait for any key press
     # Redirect from /dev/tty ensures it works when the script is piped
-    read -n 1 -s -r <> /dev/tty 2>/dev/null || true
+    read -n 1 -s -r < /dev/tty 2>/dev/null || true
     
     # Kill the background process
     kill $cmd_pid 2>/dev/null
@@ -944,7 +944,7 @@ show_peers() {
         
         # Header Section
         echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "║                    LIVE PEER CONNECTIONS BY COUNTRY               ║"
+        echo -e "║                    LIVE NETWORK ACTIVITY BY COUNTRY               ║"
         echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════╣${NC}"
         if [ -f /tmp/conduit_peers_current ]; then
             local update_time=$(date '+%H:%M:%S')
@@ -958,7 +958,7 @@ show_peers() {
         
         # Data Table Section
         if [ -s /tmp/conduit_peers_current ]; then
-            echo -e "${BOLD}   Peers | Country${NC}"
+            echo -e "${BOLD}   Count | Country${NC}"
             echo -e "   ──────|──────────────────────────────────────"
             while read -r line; do
                 local p_count=$(echo "$line" | awk '{print $1}')
@@ -985,6 +985,7 @@ show_peers() {
             awk -F: '/Country Edition/{print $2}' | \
             sed 's/^ // ' | \
             sed 's/Iran, Islamic Republic of/Iran - #FreeIran/' | \
+            sed 's/IP Address not found/Unknown\/Local/' | \
             sort | \
             uniq -c | \
             sort -nr | \
@@ -1401,7 +1402,6 @@ show_menu() {
                 ;;
             2)
                 show_live_stats
-                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             3)
