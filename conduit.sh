@@ -1063,11 +1063,12 @@ show_live_stats() {
 
         # Parse JSON values (using grep/sed since jq may not be available)
         # Field names: connectingClients, connectedClients, totalBytesUp, totalBytesDown, uptimeSeconds
-        local connecting=$(echo "$stats_json" | grep -o '"connectingClients":[0-9]*' | grep -o '[0-9]*')
-        local connected=$(echo "$stats_json" | grep -o '"connectedClients":[0-9]*' | grep -o '[0-9]*')
-        local total_up=$(echo "$stats_json" | grep -o '"totalBytesUp":[0-9]*' | grep -o '[0-9]*')
-        local total_down=$(echo "$stats_json" | grep -o '"totalBytesDown":[0-9]*' | grep -o '[0-9]*')
-        local uptime_sec=$(echo "$stats_json" | grep -o '"uptimeSeconds":[0-9]*' | grep -o '[0-9]*')
+        # Note: JSON has spaces after colons, e.g. "field": 123
+        local connecting=$(echo "$stats_json" | grep -o '"connectingClients": *[0-9]*' | grep -o '[0-9]*')
+        local connected=$(echo "$stats_json" | grep -o '"connectedClients": *[0-9]*' | grep -o '[0-9]*')
+        local total_up=$(echo "$stats_json" | grep -o '"totalBytesUp": *[0-9]*' | grep -o '[0-9]*')
+        local total_down=$(echo "$stats_json" | grep -o '"totalBytesDown": *[0-9]*' | grep -o '[0-9]*')
+        local uptime_sec=$(echo "$stats_json" | grep -o '"uptimeSeconds": *[0-9]*' | grep -o '[0-9]*')
 
         # Default to 0 if empty
         connecting=${connecting:-0}
