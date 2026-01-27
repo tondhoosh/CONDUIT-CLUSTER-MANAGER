@@ -507,6 +507,71 @@ install_docker() {
     fi
 }
 
+ensure_docker_running() {
+    # Ensures Docker CLI exists AND Docker Engine (daemon) is reachable.
+    # If daemon isn't running, prompts user for permission to start it; otherwise exits with an explicit message.
+
+    if ! command -v docker &>/dev/null; then
+        log_error "Docker is not installed (docker command not found)."
+        log_error "Please install Docker and rerun this script."
+        exit 1
+    fi
+
+    # Fast path: daemon already running
+    if docker info &>/dev/null; then
+        return 0
+    fi
+
+    log_warn "Docker is installed but the Docker Engine (daemon) is not running."
+    echo ""
+    echo -e "${CYAN}Docker is required to continue.${NC}"
+    echo -e "This script can try to start the Docker service for you."
+    echo ""
+    read -p "Start Docker Engine now? [y/N] " start_docker_confirm < /dev/tty || true
+
+    if [[ ! "$start_docker_confirm" =~ ^[Yy] ]]; then
+        echo ""
+        log_error "Docker Engine is not running. Cannot continue without Docker."
+        log_info "Start it manually, then rerun this script."
+        log_info "  systemd:   sudo systemctl start docker"
+        log_info "  SysVinit:  sudo service docker start   (or /etc/init.d/docker start)"
+        log_info "  OpenRC:    sudo rc-service docker start"
+        exit 1
+    fi
+
+    echo ""
+    log_info "Starting Docker..."
+
+    if [ "$HAS_SYSTEMD" = "true" ]; then
+        systemctl start docker 2>/dev/null || true
+    else
+        # OpenRC / SysVinit fallbacks
+        service docker start 2>/dev/null || true
+        /etc/init.d/docker start 2>/dev/null || true
+        rc-service docker start 2>/dev/null || true
+    fi
+
+    # Wait briefly for daemon readiness
+    local retries=10
+    while ! docker info &>/dev/null && [ $retries -gt 0 ]; do
+        sleep 1
+        retries=$((retries - 1))
+    done
+
+    if docker info &>/dev/null; then
+        log_success "Docker Engine is running"
+        return 0
+    fi
+
+    log_error "Docker Engine is not running (cannot connect to the Docker daemon)."
+    log_error "Please start Docker, then rerun this script."
+    log_info "Common commands:"
+    log_info "  systemd:   sudo systemctl start docker"
+    log_info "  SysVinit:  sudo service docker start   (or /etc/init.d/docker start)"
+    log_info "  OpenRC:    sudo rc-service docker start"
+    exit 1
+}
+
 
 #═══════════════════════════════════════════════════════════════════════
 # check_and_offer_backup_restore() - Check for existing backup keys
@@ -2655,6 +2720,7 @@ main() {
     # Step 1: Install Docker (if not already installed)
     log_info "Step 1/5: Installing Docker..."
     install_docker
+    ensure_docker_running
 
     echo ""
 
