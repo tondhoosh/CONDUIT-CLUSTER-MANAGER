@@ -496,6 +496,7 @@ update_traffic_usage() {
     
     # Persist updated total
     save_traffic_data
+    enforce_traffic_limit
 }
 
 # check_traffic_limit() - Check if traffic limit has been exceeded
@@ -2235,6 +2236,7 @@ start_conduit() {
     # Check traffic limit before starting
     # If limit exceeded, refuse to start until limit is raised or reset
     if ! check_traffic_limit; then
+        enforce_traffic_limit
         local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
         echo ""
         echo -e "${RED}╔═══════════════════════════════════════════════════════════════════╗${NC}"
@@ -2291,6 +2293,23 @@ stop_conduit() {
 
 restart_conduit() {
     echo "Restarting Conduit..."
+    if ! check_traffic_limit; then
+        enforce_traffic_limit
+        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
+        echo ""
+        echo -e "${RED}╔═══════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║                    ⚠️  TRAFFIC LIMIT EXCEEDED                      ║${NC}"
+        echo -e "${RED}╚═══════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  Traffic Used:  ${YELLOW}${used_fmt}${NC}"
+        echo -e "  Traffic Limit: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
+        echo ""
+        echo -e "  Conduit cannot restart until you either:"
+        echo -e "    1. Increase the traffic limit:  ${CYAN}conduit traffic limit${NC}"
+        echo -e "    2. Reset the traffic counter:   ${CYAN}conduit traffic reset${NC}"
+        echo ""
+        return 1
+    fi
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
         # Stop and remove the existing container
         docker stop conduit 2>/dev/null || true
