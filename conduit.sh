@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.1.0                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.2                          ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
