@@ -16,7 +16,7 @@
 # Usage:
 # curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | sudo bash
 #
-# Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
+# Reference: https://github.com/ssmirr/conduit/releases/tag/latest
 # Conduit CLI options:
 #   -m, --max-clients int   maximum number of proxy clients (1-1000) (default 200)
 #   -b, --bandwidth float   bandwidth limit per peer in Mbps (1-40, or -1 for unlimited) (default 5)
@@ -32,7 +32,7 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 
 VERSION="1.0.2"
-CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
+CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
 FORCE_REINSTALL=false
@@ -766,13 +766,13 @@ create_management_script() {
 #!/bin/bash
 #
 # Psiphon Conduit Manager
-# Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
+# Reference: https://github.com/ssmirr/conduit/releases/tag/latest
 #
 
 VERSION="1.0.2"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
-CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
+CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:latest"
 
 # Colors
 RED='\033[0;31m'
