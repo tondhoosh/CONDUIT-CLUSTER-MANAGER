@@ -392,9 +392,9 @@ parse_traffic_value() {
     local value="$1"
     local num unit
     
-    # Extract numeric part and unit
+    # Extract numeric part and unit (supports KB/MB/GB/TB and KiB/MiB/GiB/TiB)
     num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]?B' | head -1)
+    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
     
     # Default to 0 if parsing fails
     if [ -z "$num" ]; then
@@ -404,12 +404,12 @@ parse_traffic_value() {
     
     # Convert to bytes based on unit
     case "$unit" in
-        TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)  awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)  awk "BEGIN {printf \"%.0f\", $num}" ;;
+        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
+        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
+        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
+        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
+        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
     esac
 }
 
@@ -444,8 +444,8 @@ format_traffic_bytes() {
 get_current_session_traffic() {
     local logs upload download up_bytes down_bytes
     
-    # Get the latest STATS line from container logs
-    logs=$(docker logs --tail 100 conduit 2>&1 | grep "STATS" | tail -1)
+    # Get the latest STATS line from container logs (larger window to reduce misses)
+    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
     
     if [ -z "$logs" ]; then
         echo 0
@@ -546,6 +546,84 @@ reset_traffic_counter() {
     save_traffic_data
     log_success "Traffic counter reset to 0"
     log_info "Counter reset at: $TRAFFIC_RESET_DATE"
+}
+
+# start_traffic_monitor() - Start background traffic enforcement monitor
+# Runs every 30 seconds while container is running
+# Automatically stops container if traffic limit is exceeded
+start_traffic_monitor() {
+    # Kill any existing monitor for this container
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    if [ -f "$pid_file" ]; then
+        local old_pid=$(cat "$pid_file" 2>/dev/null)
+        kill "$old_pid" 2>/dev/null || true
+    fi
+    
+    # Start new background monitor
+    (
+        while true; do
+            # Exit loop if container is no longer running
+            if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+                break
+            fi
+            
+            # Sleep before first check (allow container time to start)
+            sleep 30
+            
+            # Check again if container still running
+            if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+                break
+            fi
+            
+            # Load current traffic data and update usage
+            load_traffic_data
+            update_traffic_usage 2>/dev/null || true
+            
+            # enforce_traffic_limit will stop container if needed
+            # (suppress output since this runs in background)
+        done
+        
+        # Cleanup when monitor exits
+        rm -f "$pid_file" 2>/dev/null || true
+    ) &
+    
+    # Save monitor process ID
+    echo $! > "$pid_file"
+}
+
+# stop_traffic_monitor() - Stop the background traffic monitor
+stop_traffic_monitor() {
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file" 2>/dev/null || true
+    fi
+}
+
+# ensure_traffic_monitor_running() - Start monitor if conduit is running and limit is set
+ensure_traffic_monitor_running() {
+    # Skip when no limit is set
+    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
+        return
+    fi
+
+    # Only run when container is up
+    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        return
+    fi
+
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return
+        fi
+    fi
+
+    start_traffic_monitor
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -1015,7 +1093,7 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.1.0"
+VERSION="1.0.2"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
@@ -1074,9 +1152,9 @@ parse_traffic_value() {
     local value="$1"
     local num unit
     
-    # Extract numeric part and unit
+    # Extract numeric part and unit (supports KB/MB/GB/TB and KiB/MiB/GiB/TiB)
     num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]?B' | head -1)
+    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
     
     # Default to 0 if parsing fails
     if [ -z "$num" ]; then
@@ -1086,12 +1164,12 @@ parse_traffic_value() {
     
     # Convert to bytes based on unit
     case "$unit" in
-        TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)  awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)  awk "BEGIN {printf \"%.0f\", $num}" ;;
+        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
+        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
+        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
+        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
+        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
     esac
 }
 
@@ -1126,8 +1204,8 @@ format_traffic_bytes() {
 get_current_session_traffic() {
     local logs upload download up_bytes down_bytes
     
-    # Get the latest STATS line from container logs
-    logs=$(docker logs --tail 100 conduit 2>&1 | grep "STATS" | tail -1)
+    # Get the latest STATS line from container logs (larger window to reduce misses)
+    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
     
     if [ -z "$logs" ]; then
         echo 0
@@ -1177,6 +1255,7 @@ update_traffic_usage() {
     
     # Persist updated total
     save_traffic_data
+    enforce_traffic_limit
 }
 
 # check_traffic_limit() - Check if traffic limit has been exceeded
@@ -1352,6 +1431,9 @@ run_conduit_container() {
         --network host \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+    
+    # Start background traffic monitoring
+    start_traffic_monitor
 }
 
 print_header() {
@@ -2258,6 +2340,7 @@ start_conduit() {
         # Check if container is already running
         if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
             echo -e "${GREEN}✓ Conduit is already running${NC}"
+            ensure_traffic_monitor_running
             return 0
         fi
 
@@ -2283,6 +2366,8 @@ start_conduit() {
 
 stop_conduit() {
     echo "Stopping Conduit..."
+    # Stop traffic monitoring first
+    stop_traffic_monitor
     if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
         docker stop conduit 2>/dev/null
         echo -e "${YELLOW}✓ Conduit stopped${NC}"
@@ -2293,6 +2378,8 @@ stop_conduit() {
 
 restart_conduit() {
     echo "Restarting Conduit..."
+    # Stop traffic monitoring first
+    stop_traffic_monitor
     if ! check_traffic_limit; then
         enforce_traffic_limit
         local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
@@ -2602,6 +2689,7 @@ traffic_menu() {
         # Show current traffic status
         # Update traffic data if container is running
         if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+            ensure_traffic_monitor_running
             update_traffic_usage
         fi
         
