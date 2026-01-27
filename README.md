@@ -120,6 +120,17 @@ sudo bash conduit.sh --help
 - Internet connection
 - Minimum 512MB RAM (1GB+ recommended)
 
+### macOS Requirements
+
+For macOS users, you must have **Homebrew** installed. If you don't have it, run:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+You also need **Docker Desktop** installed and running:
+[Download Docker Desktop](https://www.docker.com/products/docker-desktop/)
+
 ## How It Works
 
 1. **Detection** - Identifies your Linux distribution and init system

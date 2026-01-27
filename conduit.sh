@@ -90,6 +90,11 @@ detect_os() {
     HAS_SYSTEMD=false
     PKG_MANAGER="unknown"
     
+    # macOS: Ensure Homebrew is in PATH for root users
+    if [ "$(uname)" = "Darwin" ]; then
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    fi
+
     # Detect OS from /etc/os-release
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -105,6 +110,9 @@ detect_os() {
         OS="arch"
     elif [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
         OS="opensuse"
+    elif [ "$(uname)" = "Darwin" ]; then
+        OS="macos"
+        OS_VERSION=$(sw_vers -productVersion)
     else
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     fi
@@ -134,6 +142,10 @@ detect_os() {
         alpine)
             OS_FAMILY="alpine"
             PKG_MANAGER="apk"
+            ;;
+        macos)
+            OS_FAMILY="macos"
+            PKG_MANAGER="brew"
             ;;
         *)
             OS_FAMILY="unknown"
@@ -209,6 +221,26 @@ install_package() {
                 return 1
             fi
             ;;
+        brew)
+            # Homebrew cannot run as root. If we are root (sudo), try to run as SUDO_USER for brew.
+            if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+                log_info "Running as root: attempting to run brew as $SUDO_USER"
+                if sudo -u "$SUDO_USER" brew list "$package" &>/dev/null || sudo -u "$SUDO_USER" brew install "$package"; then
+                     log_success "$package installed successfully via sudo -u $SUDO_USER"
+                else
+                     log_error "Failed to install $package as $SUDO_USER for brew"
+                     return 1
+                fi
+            else
+                # Not running as root or SUDO_USER not set (unusual for install script)
+                if brew list "$package" &>/dev/null || brew install "$package"; then
+                    log_success "$package installed successfully"
+                else
+                    log_error "Failed to install $package"
+                    return 1
+                fi
+            fi
+            ;;
         *)
             log_warn "Unknown package manager. Please install $package manually."
             return 1
@@ -263,8 +295,9 @@ check_dependencies() {
         install_package tcpdump || log_warn "Could not install tcpdump automatically"
     fi
 
-    # Check for GeoIP tools
-    if ! command -v geoiplookup &>/dev/null; then
+    # Check for GeoIP tools (geoiplookup OR mmdblookup)
+    if ! command -v geoiplookup &>/dev/null && ! command -v mmdblookup &>/dev/null; then
+        log_warn "Geolocation tools not found in PATH: $PATH"
         case "$PKG_MANAGER" in
             apt) 
                 # geoip-bin and geoip-database for newer systems
@@ -282,8 +315,20 @@ check_dependencies() {
             pacman) install_package geoip || log_warn "Could not install geoip." ;;
             zypper) install_package GeoIP || log_warn "Could not install GeoIP." ;;
             apk) install_package geoip || log_warn "Could not install geoip." ;;
+            brew) 
+                # geoip is removed from Homebrew, use libmaxminddb
+                install_package libmaxminddb || log_warn "Could not install libmaxminddb (mmdblookup)."
+                ;;
             *) log_warn "Could not install geoiplookup automatically" ;;
         esac
+    fi
+
+    # macOS specific: Check for coreutils (for gtimeout)
+    if [ "$OS_FAMILY" = "macos" ]; then
+        if ! command -v gtimeout &>/dev/null; then
+             log_info "Installing coreutils (required for timeout implementation)..."
+             install_package coreutils || log_warn "Could not install coreutils"
+        fi
     fi
 }
 
@@ -294,6 +339,12 @@ get_ram_mb() {
     # Try free command first
     if command -v free &>/dev/null; then
         ram=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    elif [ "$(uname)" = "Darwin" ]; then
+        # macOS: use sysctl
+        local bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        if [ -n "$bytes" ]; then
+            ram=$((bytes / 1024 / 1024))
+        fi
     fi
     
     # Fallback: parse /proc/meminfo
@@ -316,8 +367,11 @@ get_ram_mb() {
 
 get_cpu_cores() {
     local cores=1
+    local cores=1
     if command -v nproc &>/dev/null; then
         cores=$(nproc)
+    elif [ "$(uname)" = "Darwin" ]; then
+        cores=$(sysctl -n hw.ncpu 2>/dev/null)
     elif [ -f /proc/cpuinfo ]; then
         cores=$(grep -c ^processor /proc/cpuinfo)
     fi
@@ -466,6 +520,16 @@ install_docker() {
         apk add --no-cache docker docker-cli-compose 2>/dev/null
         rc-update add docker boot 2>/dev/null || true
         service docker start 2>/dev/null || rc-service docker start 2>/dev/null || true
+    elif [ "$OS_FAMILY" = "macos" ]; then
+         # macOS: Check if Docker is installed, otherwise warn user
+         if ! command -v docker &>/dev/null; then
+             log_error "Docker is required but cannot be automatically installed on macOS."
+             log_error "Please install 'Docker Desktop' manually and run it before continuing."
+             log_info "Download: https://www.docker.com/products/docker-desktop/"
+             exit 1
+         fi
+         # Docker Desktop handles its own startup
+         log_success "Docker detected (Docker Desktop)"
     else
         # Use official Docker install
         if ! curl -fsSL https://get.docker.com | sh; then
@@ -660,6 +724,13 @@ EOF
 setup_autostart() {
     log_info "Setting up auto-start on boot..."
     
+    if [ "$OS_FAMILY" = "macos" ]; then
+        log_warn "Auto-start on macOS is managed by Docker Desktop."
+        log_info "Please ensure 'Start Docker when you log in' is enabled in Docker Desktop settings."
+        log_info "The container is set to restart automatically when Docker starts."
+        return 0
+    fi
+
     if [ "$HAS_SYSTEMD" = "true" ]; then
         # Systemd-based systems
         local docker_path=$(command -v docker)
@@ -774,6 +845,23 @@ INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
 
+# Detect OS
+OS_FAMILY="linux"
+if [ "$(uname)" = "Darwin" ]; then
+    OS_FAMILY="macos"
+fi
+
+# Timeout handling for macOS
+TIMEOUT_CMD="timeout"
+if [ "$OS_FAMILY" = "macos" ]; then
+    if command -v gtimeout &>/dev/null; then
+        TIMEOUT_CMD="gtimeout"
+    else
+        # Fallback if coreutils not installed (should not happen if installer run)
+        TIMEOUT_CMD="perl -e 'alarm shift; exec @ARGV' "
+    fi
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -781,6 +869,11 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+# macOS: Ensure Homebrew is in PATH for root users (sudo)
+if [ "$(uname)" = "Darwin" ]; then
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+fi
 
 # Load settings
 [ -f "$INSTALL_DIR/settings.conf" ] && source "$INSTALL_DIR/settings.conf"
@@ -809,10 +902,14 @@ check_docker() {
     if ! docker info &>/dev/null; then
         echo -e "${RED}Error: Docker daemon is not running!${NC}"
         echo ""
-        echo "Start Docker with:"
-        echo "  sudo systemctl start docker       # For systemd"
-        echo "  sudo /etc/init.d/docker start     # For SysVinit"
-        echo "  sudo rc-service docker start      # For OpenRC"
+        if [ "$OS_FAMILY" = "macos" ]; then
+             echo "Start Docker Desktop manually and wait for it to initialize."
+        else
+             echo "Start Docker with:"
+             echo "  sudo systemctl start docker       # For systemd"
+             echo "  sudo /etc/init.d/docker start     # For SysVinit"
+             echo "  sudo rc-service docker start      # For OpenRC"
+        fi
         exit 1
     fi
 }
@@ -944,8 +1041,11 @@ get_container_stats() {
 
 get_cpu_cores() {
     local cores=1
+    local cores=1
     if command -v nproc &>/dev/null; then
         cores=$(nproc)
+    elif [ "$OS_FAMILY" = "macos" ]; then
+        cores=$(sysctl -n hw.ncpu 2>/dev/null)
     elif [ -f /proc/cpuinfo ]; then
         cores=$(grep -c ^processor /proc/cpuinfo)
     fi
@@ -1062,23 +1162,77 @@ show_peers() {
     local stop_peers=0
     trap 'stop_peers=1' SIGINT SIGTERM
 
-    # Verify required dependencies are installed
-    if ! command -v tcpdump &>/dev/null || ! command -v geoiplookup &>/dev/null; then
-        echo -e "${RED}Error: tcpdump or geoiplookup not found!${NC}"
-        echo "Please re-run the main installer to fix dependencies."
+    # Verify required dependencies and setup geolocation
+    if ! command -v tcpdump &>/dev/null; then
+        echo -e "${RED}Error: tcpdump not found!${NC}"
+        echo "PATH is: $PATH"
         read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
         return 1
     fi
 
-    # Network interface detection
-    # Use "any" to capture on all interfaces
-    local iface="any"
+    # Geolocation tool detection (prefer geoiplookup, fallback to mmdblookup)
+    local geo_tool="none"
+    if command -v geoiplookup &>/dev/null; then
+        geo_tool="geoiplookup"
+    elif command -v mmdblookup &>/dev/null; then
+        geo_tool="mmdblookup"
+    else
+        echo -e "${RED}Error: No geolocation tool found (geoiplookup or mmdblookup)${NC}"
+        echo "Please re-run the installer to fix dependencies."
+        read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+        return 1
+    fi
 
-    # Detect local IP address to determine traffic direction
-    # Method 1: Query the route to a public IP (most reliable)
-    # Method 2: Fallback to hostname -I
-    local local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
-    [ -z "$local_ip" ] && local_ip=$(hostname -I | awk '{print $1}')
+    # For mmdblookup, we need a database file. Check/Download if missing.
+    local mmdb_file="/usr/share/GeoIP/GeoLite2-Country.mmdb"
+    # Mac Homebrew location fallback
+    if [ ! -f "$mmdb_file" ] && [ -f "/opt/homebrew/var/GeoIP/GeoLite2-Country.mmdb" ]; then
+        mmdb_file="/opt/homebrew/var/GeoIP/GeoLite2-Country.mmdb"
+    fi
+    # Local fallback
+    if [ ! -f "$mmdb_file" ]; then
+        mmdb_file="$INSTALL_DIR/GeoLite2-Country.mmdb"
+    fi
+
+    if [ "$geo_tool" = "mmdblookup" ] && [ ! -f "$mmdb_file" ]; then
+        echo -e "${YELLOW}GeoLite2-Country.mmdb not found. Downloading generic database...${NC}"
+        # Download a public domain / free version (e.g. from a mirror or upstream if license allows)
+        # Using a reliable public mirror for the raw mmdb file for convenience
+        # Note: MaxMind requires license key now, so we try to find a public open alternative or instruct user
+        
+        # Try to download from a known open mirror (IPToCountry or similar compatible mmdb)
+        # For stability, we will warn the user if we can't find it.
+        if curl -L -o "$mmdb_file" "https://git.io/GeoLite2-Country.mmdb" --connect-timeout 5 --fail 2>/dev/null; then
+             echo -e "${GREEN}Database downloaded successfully.${NC}"
+        else
+             echo -e "${RED}Could not auto-download GeoLite2 database.${NC}"
+             echo "Please manually place 'GeoLite2-Country.mmdb' in $INSTALL_DIR"
+             echo "or install it via package manager."
+             read -n 1 -s -r -p "Press any key to continue without country data..." < /dev/tty || true
+             geo_tool="none" # Disable geo lookup for this session
+        fi
+    fi
+
+    # Network interface detection
+    local iface="any"
+    local local_ip=""
+
+    if [ "$OS_FAMILY" = "macos" ]; then
+         # macOS: Detect default interface
+         iface=$(route -n get default | awk '/interface:/{print $2}')
+         if [ -z "$iface" ]; then iface="en0"; fi # Default fallback
+         
+         # Detect local IP on that interface
+         local_ip=$(ifconfig "$iface" | grep "inet " | awk '{print $2}')
+    else
+         # Linux logic
+         # Use "any" to capture on all interfaces
+         iface="any"
+
+         # Detect local IP address to determine traffic direction
+         local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
+         [ -z "$local_ip" ] && local_ip=$(hostname -I | awk '{print $1}')
+    fi
 
     # Clean temporary working files (per-cycle data only)
     rm -f /tmp/conduit_peers_current /tmp/conduit_peers_raw
@@ -1250,7 +1404,7 @@ show_peers() {
         # Wrap pipeline in subshell so $! captures the whole pipeline PID, not just awk
         # This ensures the progress indicator runs for the full 15-second capture
         (
-            timeout 15 tcpdump -ni $iface -q '(tcp or udp)' 2>/dev/null | \
+            $TIMEOUT_CMD 15 tcpdump -ni $iface -q '(tcp or udp)' 2>/dev/null | \
             awk -v local_ip="$local_ip" '
             # Portable awk script - works with mawk, gawk, and busybox awk
             /IP/ {
@@ -1396,115 +1550,111 @@ show_peers() {
         #   "to"   = bytes sent TO remote IP (outgoing from your server)
         #═══════════════════════════════════════════════════════════════════
         if [ -s /tmp/conduit_peers_raw ]; then
-            # Associative arrays for this capture cycle - MUST unset first!
-            # In bash, 'declare -A' does NOT clear existing arrays, causing accumulation bug
-            unset cycle_from cycle_to cycle_ips ip_to_country
-            declare -A cycle_from       # Bytes received FROM each country this cycle
-            declare -A cycle_to         # Bytes sent TO each country this cycle
-            declare -A cycle_ips        # IPs seen this cycle per country (for active count)
-            declare -A ip_to_country    # Map IP -> country for deduplication
+            # Define temp files
+            > /tmp/conduit_cycle_stats
+            > /tmp/conduit_cycle_ips
 
             # Process each IP from the raw capture data
             # Raw format: IP|bytes_from|bytes_to
             while IFS='|' read -r ip from_bytes to_bytes; do
                 [ -z "$ip" ] && continue
 
-                # Resolve IP to country using GeoIP database
-                local country_info=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ //')
+                # Resolve IP to country
+                local country_info="Unknown"
+                
+                if [ "$geo_tool" = "geoiplookup" ]; then
+                    country_info=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ //')
+                elif [ "$geo_tool" = "mmdblookup" ]; then
+                    # mmdblookup output is JSON-ish/structure:
+                    #   "en" <utf8_string> : "United States"
+                    # We look for the English name
+                    local raw_geo=$(mmdblookup --file "$mmdb_file" --ip "$ip" country names en 2>/dev/null)
+                    # Extract string inside quotes after :
+                    country_info=$(echo "$raw_geo" | grep -o '"[^"]*"' | tr -d '"' | tail -1)
+                fi
+                
                 [ -z "$country_info" ] && country_info="Unknown"
 
                 # Normalize certain country names for display
                 country_info=$(echo "$country_info" | sed 's/Iran, Islamic Republic of/Iran - #FreeIran/' | sed 's/Moldova, Republic of/Moldova/')
 
-                # Store IP to country mapping for later
-                ip_to_country["$ip"]="$country_info"
-
-                # Aggregate this cycle's traffic by country
-                cycle_from["$country_info"]=$((${cycle_from["$country_info"]:-0} + from_bytes))
-                cycle_to["$country_info"]=$((${cycle_to["$country_info"]:-0} + to_bytes))
-
-                # Track active IPs this cycle (append IP to country's IP list)
-                cycle_ips["$country_info"]="${cycle_ips["$country_info"]} $ip"
+                # Append to temporary files for awk processing (Bash 3 compatible)
+                echo "$country_info|$from_bytes|$to_bytes" >> /tmp/conduit_cycle_stats
+                echo "$country_info|$ip" >> /tmp/conduit_cycle_ips
             done < /tmp/conduit_peers_raw
 
-            # Load existing cumulative traffic data from persistent storage
-            unset cumul_from cumul_to
-            declare -A cumul_from
-            declare -A cumul_to
-            if [ -s "$persist_dir/cumulative_data" ]; then
-                while IFS='|' read -r country cfrom cto; do
-                    [ -z "$country" ] && continue
-                    cumul_from["$country"]=$cfrom
-                    cumul_to["$country"]=$cto
-                done < "$persist_dir/cumulative_data"
-            fi
+            # ---------------------------------------------------------
+            # Aggregate Cycle Data (replace declare -A with awk)
+            # ---------------------------------------------------------
+            
+            # 1. Sum up cycle totals by country
+            awk -F"|" '{f[$1]+=$2; t[$1]+=$3} END {for(c in f) print c "|" f[c] "|" t[c]}' /tmp/conduit_cycle_stats > /tmp/conduit_cycle_sums
+            
+            # 2. Merge with Cumulative Data
+            # Input persistent: Country|TotF|TotT
+            # Input cycle:      Country|CycF|CycT
+            [ ! -f "$persist_dir/cumulative_data" ] && touch "$persist_dir/cumulative_data"
+            
+            (
+                sed 's/^/P|/' "$persist_dir/cumulative_data"
+                sed 's/^/C|/' /tmp/conduit_cycle_sums
+            ) | awk -F"|" '
+            $1=="P" { tf[$2]=$3; tt[$2]=$4; seen[$2]=1 }
+            $1=="C" { cf[$2]=$3; ct[$2]=$4; seen[$2]=1 }
+            END {
+                for (c in seen) {
+                    ntf = (tf[c]+0) + (cf[c]+0)
+                    ntt = (tt[c]+0) + (ct[c]+0)
+                    # Output for saving: S|Country|NewTotF|NewTotT
+                    print "S|" c "|" ntf "|" ntt
+                    # Output for display: D|Country|NewTotF|NewTotT|CycF|CycT
+                    print "D|" c "|" ntf "|" ntt "|" (cf[c]+0) "|" (ct[c]+0)
+                }
+            }' > /tmp/conduit_calc_tmp
+            
+            # Save updated cumulative data
+            grep "^S|" /tmp/conduit_calc_tmp | cut -d'|' -f2- > "$persist_dir/cumulative_data"
+            
+            # Extract stats for display (Country|TotF|TotT|CycF|CycT)
+            grep "^D|" /tmp/conduit_calc_tmp | cut -d'|' -f2- > /tmp/conduit_display_stats
 
-            # Add this cycle's traffic to cumulative totals
-            for country in "${!cycle_from[@]}"; do
-                cumul_from["$country"]=$((${cumul_from["$country"]:-0} + ${cycle_from["$country"]}))
-                cumul_to["$country"]=$((${cumul_to["$country"]:-0} + ${cycle_to["$country"]}))
-            done
-
-            # Save updated cumulative traffic data to persistent storage
-            > "$persist_dir/cumulative_data"
-            for country in "${!cumul_from[@]}"; do
-                echo "${country}|${cumul_from[$country]}|${cumul_to[$country]}" >> "$persist_dir/cumulative_data"
-            done
-
-            # Update cumulative IP tracking (add new IPs seen this cycle)
-            for ip in "${!ip_to_country[@]}"; do
-                local country="${ip_to_country[$ip]}"
-                # Check if this IP|Country combo already exists
-                if ! grep -q "^${country}|${ip}$" "$persist_dir/cumulative_ips" 2>/dev/null; then
-                    echo "${country}|${ip}" >> "$persist_dir/cumulative_ips"
-                fi
-            done
-
-            # Count total unique IPs per country (cumulative)
-            unset total_ips_count
-            declare -A total_ips_count
-            if [ -s "$persist_dir/cumulative_ips" ]; then
-                while IFS='|' read -r country ip; do
-                    [ -z "$country" ] && continue
-                    total_ips_count["$country"]=$((${total_ips_count["$country"]:-0} + 1))
-                done < "$persist_dir/cumulative_ips"
-            fi
-
-            # Count active IPs this cycle per country
-            unset active_ips_count
-            declare -A active_ips_count
-            for country in "${!cycle_ips[@]}"; do
-                # Count unique IPs in this cycle's IP list for this country
-                local unique_count=$(echo "${cycle_ips[$country]}" | tr ' ' '\n' | sort -u | grep -c '.')
-                active_ips_count["$country"]=$unique_count
-            done
-
-            # Generate sorted output with all metrics
-            # Format: Country|TotalFrom|TotalTo|SpeedFrom|SpeedTo|TotalIPs|ActiveIPs
-            > /tmp/conduit_traffic_from
-            > /tmp/conduit_traffic_to
-            for country in "${!cumul_from[@]}"; do
-                local total_from=${cumul_from[$country]}
-                local total_to=${cumul_to[$country]}
-                local cycle_from_val=${cycle_from["$country"]:-0}
-                local cycle_to_val=${cycle_to["$country"]:-0}
-                # Calculate speed (bytes per second) from 15-second capture
-                local speed_from=$((cycle_from_val / 15))
-                local speed_to=$((cycle_to_val / 15))
-                # Get IP counts
-                local total_ips=${total_ips_count["$country"]:-0}
-                local active_ips=${active_ips_count["$country"]:-0}
-                echo "${country}|${total_from}|${total_to}|${speed_from}|${speed_to}|${total_ips}|${active_ips}" >> /tmp/conduit_traffic_from
-            done
-
-            # Sort by total incoming traffic (field 2) descending
-            sort -t'|' -k2 -nr -o /tmp/conduit_traffic_from /tmp/conduit_traffic_from
-
-            # Copy and sort by total outgoing traffic (field 3) descending
-            cp /tmp/conduit_traffic_from /tmp/conduit_traffic_to
-            sort -t'|' -k3 -nr -o /tmp/conduit_traffic_to /tmp/conduit_traffic_to
-
-            # Touch marker file to indicate data is ready for display
+            # 3. Handle IPs (Active & Cumulative)
+            # Active IPs Count (unique IPs in this cycle per country)
+            sort -u /tmp/conduit_cycle_ips | awk -F"|" '{n[$1]++} END {for(c in n) print c "|" n[c]}' > /tmp/conduit_active_ips
+            
+            # Cumulative IPs
+            cat /tmp/conduit_cycle_ips >> "$persist_dir/cumulative_ips"
+            # Deduplicate (naive sort, fine for small-medium datasets)
+            sort -u -o "$persist_dir/cumulative_ips" "$persist_dir/cumulative_ips"
+            # Count Cumulative IPs
+            awk -F"|" '{n[$1]++} END {for(c in n) print c "|" n[c]}' "$persist_dir/cumulative_ips" > /tmp/conduit_total_ips
+            
+            # 4. Final Join for Display
+            # Inputs:
+            # S|Country|TotF|TotT|CycF|CycT   (from display_stats)
+            # A|Country|ActiveCount           (from active_ips)
+            # T|Country|TotalCount            (from total_ips)
+            (
+                sed 's/^/S|/' /tmp/conduit_display_stats
+                sed 's/^/A|/' /tmp/conduit_active_ips
+                sed 's/^/T|/' /tmp/conduit_total_ips
+            ) | awk -F"|" '
+            $1=="S" { tf[$2]=$3; tt[$2]=$4; cf[$2]=$5; ct[$2]=$6; seen[$2]=1 }
+            $1=="A" { ac[$2]=$3 }
+            $1=="T" { tc[$2]=$3 }
+            END {
+                for (c in seen) {
+                    # Country|TotalFrom|TotalTo|SpeedFrom|SpeedTo|TotalIPs|ActiveIPs
+                    s_from = int(cf[c]/15)
+                    s_to   = int(ct[c]/15)
+                    print c "|" tf[c] "|" tt[c] "|" s_from "|" s_to "|" (tc[c]+0) "|" (ac[c]+0)
+                }
+            }' > /tmp/conduit_traffic_unsorted
+            
+            # Sort for display lists
+            sort -t'|' -k2 -nr /tmp/conduit_traffic_unsorted > /tmp/conduit_traffic_from
+            sort -t'|' -k3 -nr /tmp/conduit_traffic_unsorted > /tmp/conduit_traffic_to
+            
             touch /tmp/conduit_peers_current
         fi
 
@@ -2429,7 +2579,12 @@ esac
 MANAGEMENT
 
     # Patch the INSTALL_DIR in the generated script
-    sed -i "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    # Patch the INSTALL_DIR in the generated script
+    if [ "$OS_FAMILY" = "macos" ]; then
+        sed -i "" "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    else
+        sed -i "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    fi
     
     chmod +x "$INSTALL_DIR/conduit"
     # Force create symlink
