@@ -22,6 +22,7 @@ sudo bash conduit.sh
 - **Auto-Start on Boot** - Supports systemd, OpenRC, and SysVinit
 - **Live Monitoring** - Real-time connection stats with CPU/RAM monitoring
 - **Live Peer Traffic** - Real-time traffic monitoring by country with GeoIP lookup
+- **Traffic Control** - Set data transfer limits with automatic shutoff when reached
 - **Easy Management** - Powerful CLI commands or interactive menu
 - **Backup & Restore** - Backup and restore your node identity key
 - **Health Checks** - Comprehensive diagnostics for troubleshooting
@@ -64,8 +65,15 @@ conduit update       # Update to the latest Conduit image
 
 ### Configuration
 ```bash
-conduit settings     # Change max-clients and bandwidth
+conduit settings     # Change max-clients, bandwidth, and traffic limit
 conduit menu         # Open interactive management menu
+```
+
+### Traffic Control
+```bash
+conduit traffic          # Show traffic usage and limit status
+conduit traffic limit    # Change the traffic limit
+conduit traffic reset    # Reset traffic counter to zero
 ```
 
 ### Backup & Restore
@@ -87,6 +95,20 @@ conduit help         # Show help message
 |--------|---------|-------|-------------|
 | `max-clients` | 200 | 1-1000 | Maximum concurrent proxy clients |
 | `bandwidth` | 5 | 1-40, -1 | Bandwidth limit per peer (Mbps). Use -1 for unlimited. |
+| `traffic-limit` | -1 | 1+, -1 | Total data transfer limit (GB). Use -1 for unlimited. |
+
+### Traffic Control
+
+The traffic control feature allows you to set a maximum data transfer limit. When the limit is reached:
+- Conduit automatically stops to prevent exceeding your quota
+- The container will not start until you either:
+  - Increase the traffic limit with `conduit traffic limit`
+  - Reset the traffic counter with `conduit traffic reset`
+
+This is useful for:
+- VPS providers with monthly bandwidth quotas
+- Controlling costs on metered connections
+- Preventing excessive data usage
 
 **Recommended values based on server CPU:**
 
@@ -163,6 +185,7 @@ sudo bash conduit.sh
 - **راه‌اندازی خودکار** - پس از ریستارت سرور، سرویس به صورت خودکار اجرا می‌شود
 - **مانیتورینگ زنده** - نمایش تعداد کاربران متصل و مصرف منابع
 - **مانیتورینگ ترافیک** - نمایش لحظه‌ای ترافیک بر اساس کشور با GeoIP
+- **کنترل ترافیک** - تنظیم محدودیت انتقال داده با توقف خودکار هنگام رسیدن به حد
 - **مدیریت آسان** - دستورات قدرتمند CLI یا منوی تعاملی
 - **پشتیبان‌گیری و بازیابی** - پشتیبان‌گیری و بازیابی کلید هویت نود
 - **بررسی سلامت** - تشخیص جامع برای عیب‌یابی
@@ -193,6 +216,13 @@ conduit settings     # تغییر تنظیمات
 conduit menu         # منوی تعاملی
 ```
 
+### کنترل ترافیک
+```bash
+conduit traffic          # نمایش وضعیت مصرف و محدودیت
+conduit traffic limit    # تغییر محدودیت ترافیک
+conduit traffic reset    # صفر کردن شمارنده ترافیک
+```
+
 ### پشتیبان‌گیری و بازیابی
 ```bash
 conduit backup       # پشتیبان‌گیری از کلید نود
@@ -212,6 +242,7 @@ conduit help         # راهنما
 |-------|---------|--------|---------|
 | `max-clients` | 200 | 1-1000 | حداکثر کاربران همزمان |
 | `bandwidth` | 5 | 1-40, -1 | محدودیت پهنای باند (Mbps). برای نامحدود -1 وارد کنید. |
+| `traffic-limit` | -1 | 1+, -1 | حداکثر انتقال داده (GB). برای نامحدود -1 وارد کنید. |
 
 **مقادیر پیشنهادی بر اساس پردازنده (CPU):**
 
