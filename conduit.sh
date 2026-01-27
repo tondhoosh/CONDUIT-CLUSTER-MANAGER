@@ -551,44 +551,146 @@ reset_traffic_counter() {
 # start_traffic_monitor() - Start background traffic enforcement monitor
 # Runs every 30 seconds while container is running
 # Automatically stops container if traffic limit is exceeded
+# Uses nohup and proper detachment to survive parent script exit
 start_traffic_monitor() {
+    # Skip if no limit is set
+    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
+        return
+    fi
+
     # Kill any existing monitor for this container
     local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    local log_file="$INSTALL_DIR/.traffic_monitor.log"
     if [ -f "$pid_file" ]; then
         local old_pid=$(cat "$pid_file" 2>/dev/null)
-        kill "$old_pid" 2>/dev/null || true
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            kill "$old_pid" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+
+    # Create the monitor script that will run independently
+    local monitor_script="$INSTALL_DIR/.traffic_monitor.sh"
+    cat > "$monitor_script" << 'MONITOR_EOF'
+#!/bin/bash
+INSTALL_DIR="REPLACE_INSTALL_DIR"
+TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
+PID_FILE="$INSTALL_DIR/.traffic_monitor_pid"
+LOG_FILE="$INSTALL_DIR/.traffic_monitor.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"; }
+
+# Load traffic data
+load_data() {
+    TRAFFIC_LIMIT=-1
+    TRAFFIC_USED=0
+    [ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
+}
+
+# Parse traffic value to bytes
+parse_traffic_value() {
+    local value="$1"
+    local num unit
+    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
+    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
+    [ -z "$num" ] && { echo 0; return; }
+    case "$unit" in
+        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
+        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
+        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
+        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
+        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+    esac
+}
+
+# Get current session traffic from docker logs
+get_session_traffic() {
+    local logs upload download up_bytes down_bytes
+    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
+    [ -z "$logs" ] && { echo 0; return; }
+    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
+    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
+    up_bytes=$(parse_traffic_value "$upload")
+    down_bytes=$(parse_traffic_value "$download")
+    echo $((up_bytes + down_bytes))
+}
+
+# Update and check traffic
+check_traffic() {
+    load_data
+    
+    # Skip if unlimited
+    [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null && return 0
+    
+    local last_file="$INSTALL_DIR/.last_session_traffic"
+    local last_session=0
+    [ -f "$last_file" ] && last_session=$(cat "$last_file" 2>/dev/null || echo 0)
+    
+    local current=$(get_session_traffic)
+    
+    if [ "$current" -lt "$last_session" ]; then
+        TRAFFIC_USED=$((TRAFFIC_USED + current))
+    else
+        local delta=$((current - last_session))
+        TRAFFIC_USED=$((TRAFFIC_USED + delta))
     fi
     
-    # Start new background monitor
-    (
-        while true; do
-            # Exit loop if container is no longer running
-            if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-                break
-            fi
-            
-            # Sleep before first check (allow container time to start)
-            sleep 30
-            
-            # Check again if container still running
-            if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-                break
-            fi
-            
-            # Load current traffic data and update usage
-            load_traffic_data
-            update_traffic_usage 2>/dev/null || true
-            
-            # enforce_traffic_limit will stop container if needed
-            # (suppress output since this runs in background)
-        done
-        
-        # Cleanup when monitor exits
-        rm -f "$pid_file" 2>/dev/null || true
-    ) &
+    echo "$current" > "$last_file"
     
-    # Save monitor process ID
-    echo $! > "$pid_file"
+    # Save updated traffic
+    cat > "$TRAFFIC_FILE" << EOF
+TRAFFIC_LIMIT=$TRAFFIC_LIMIT
+TRAFFIC_USED=$TRAFFIC_USED
+TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
+EOF
+    
+    # Check limit
+    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
+    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
+        log "LIMIT EXCEEDED: Used $TRAFFIC_USED bytes >= Limit $limit_bytes bytes. Stopping container."
+        docker stop conduit 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
+# Main loop
+log "Traffic monitor started. PID: $$"
+echo $$ > "$PID_FILE"
+
+# Initial check after short delay for container startup
+sleep 5
+
+while true; do
+    # Exit if container not running
+    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        log "Container stopped. Monitor exiting."
+        break
+    fi
+    
+    check_traffic
+    if [ $? -ne 0 ]; then
+        log "Container stopped due to traffic limit. Monitor exiting."
+        break
+    fi
+    
+    sleep 30
+done
+
+rm -f "$PID_FILE" 2>/dev/null
+log "Traffic monitor stopped."
+MONITOR_EOF
+
+    # Replace placeholder with actual install dir
+    sed -i "s#REPLACE_INSTALL_DIR#$INSTALL_DIR#g" "$monitor_script"
+    chmod +x "$monitor_script"
+
+    # Start monitor in background, fully detached
+    nohup "$monitor_script" > /dev/null 2>&1 &
+    disown 2>/dev/null || true
+    
+    log_info "Traffic monitor started (PID: $!)"
 }
 
 # stop_traffic_monitor() - Stop the background traffic monitor
@@ -1093,7 +1195,7 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
@@ -1294,6 +1396,166 @@ enforce_traffic_limit() {
         return 1
     fi
     return 0
+}
+
+# start_traffic_monitor() - Start background traffic enforcement monitor
+# Creates a standalone script that runs independently, checking every 30 seconds
+# Uses nohup for proper detachment so it survives script exit
+start_traffic_monitor() {
+    # Skip if no limit is set
+    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
+        return
+    fi
+
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    local log_file="$INSTALL_DIR/.traffic_monitor.log"
+    
+    # Kill any existing monitor
+    if [ -f "$pid_file" ]; then
+        local old_pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            kill "$old_pid" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+
+    # Create standalone monitor script
+    local monitor_script="$INSTALL_DIR/.traffic_monitor.sh"
+    cat > "$monitor_script" << 'MONITOR_SCRIPT'
+#!/bin/bash
+INSTALL_DIR="REPLACE_INSTALL_DIR"
+TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
+PID_FILE="$INSTALL_DIR/.traffic_monitor_pid"
+LOG_FILE="$INSTALL_DIR/.traffic_monitor.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"; }
+
+load_data() {
+    TRAFFIC_LIMIT=-1
+    TRAFFIC_USED=0
+    [ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
+}
+
+parse_traffic_value() {
+    local value="$1"
+    local num unit
+    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
+    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
+    [ -z "$num" ] && { echo 0; return; }
+    case "$unit" in
+        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
+        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
+        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
+        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
+        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
+    esac
+}
+
+get_session_traffic() {
+    local logs upload download up_bytes down_bytes
+    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
+    [ -z "$logs" ] && { echo 0; return; }
+    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
+    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
+    up_bytes=$(parse_traffic_value "$upload")
+    down_bytes=$(parse_traffic_value "$download")
+    echo $((up_bytes + down_bytes))
+}
+
+check_traffic() {
+    load_data
+    [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null && return 0
+    
+    local last_file="$INSTALL_DIR/.last_session_traffic"
+    local last_session=0
+    [ -f "$last_file" ] && last_session=$(cat "$last_file" 2>/dev/null || echo 0)
+    
+    local current=$(get_session_traffic)
+    
+    if [ "$current" -lt "$last_session" ]; then
+        TRAFFIC_USED=$((TRAFFIC_USED + current))
+    else
+        local delta=$((current - last_session))
+        TRAFFIC_USED=$((TRAFFIC_USED + delta))
+    fi
+    
+    echo "$current" > "$last_file"
+    
+    cat > "$TRAFFIC_FILE" << EOF
+TRAFFIC_LIMIT=$TRAFFIC_LIMIT
+TRAFFIC_USED=$TRAFFIC_USED
+TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
+EOF
+    
+    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
+    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
+        log "LIMIT EXCEEDED: Used $TRAFFIC_USED >= Limit $limit_bytes. Stopping container."
+        docker stop conduit 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
+log "Traffic monitor started. PID: $$"
+echo $$ > "$PID_FILE"
+
+sleep 5
+
+while true; do
+    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        log "Container stopped. Monitor exiting."
+        break
+    fi
+    
+    check_traffic
+    if [ $? -ne 0 ]; then
+        log "Container stopped due to traffic limit. Monitor exiting."
+        break
+    fi
+    
+    sleep 30
+done
+
+rm -f "$PID_FILE" 2>/dev/null
+log "Traffic monitor stopped."
+MONITOR_SCRIPT
+
+    sed -i "s#REPLACE_INSTALL_DIR#$INSTALL_DIR#g" "$monitor_script"
+    chmod +x "$monitor_script"
+
+    nohup "$monitor_script" > /dev/null 2>&1 &
+    disown 2>/dev/null || true
+}
+
+# stop_traffic_monitor() - Stop the background traffic monitor
+stop_traffic_monitor() {
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file" 2>/dev/null || true
+    fi
+}
+
+# ensure_traffic_monitor_running() - Start monitor if conduit is running and limit is set
+ensure_traffic_monitor_running() {
+    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
+        return
+    fi
+    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        return
+    fi
+    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return
+        fi
+    fi
+    start_traffic_monitor
 }
 
 # reset_traffic_counter() - Reset the traffic usage counter to zero
@@ -2268,6 +2530,7 @@ show_status() {
     # Traffic Control Section
     # Update traffic data if container is running
     if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
+        ensure_traffic_monitor_running
         update_traffic_usage
     fi
     local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
