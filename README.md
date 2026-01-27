@@ -95,7 +95,7 @@ conduit help         # Show help message
 |--------|---------|-------|-------------|
 | `max-clients` | 200 | 1-1000 | Maximum concurrent proxy clients |
 | `bandwidth` | 5 | 1-40, -1 | Bandwidth limit per peer (Mbps). Use -1 for unlimited. |
-| `traffic-limit` | -1 | 1+, -1 | Total data transfer limit (GB). Use -1 for unlimited. |
+| `traffic-limit` | unlimited | 1+, unlimited, -1 | Total data transfer limit (GB). Press Enter or use -1 for unlimited (recommended). |
 
 ### Traffic Control
 
@@ -104,6 +104,9 @@ The traffic control feature allows you to set a maximum data transfer limit. Whe
 - The container will not start until you either:
   - Increase the traffic limit with `conduit traffic limit`
   - Reset the traffic counter with `conduit traffic reset`
+
+**To set unlimited traffic (recommended), simply press Enter or enter -1 at the prompt.**
+You can also enter a value in GB to set a specific cap.
 
 This is useful for:
 - VPS providers with monthly bandwidth quotas
@@ -242,7 +245,7 @@ conduit help         # راهنما
 |-------|---------|--------|---------|
 | `max-clients` | 200 | 1-1000 | حداکثر کاربران همزمان |
 | `bandwidth` | 5 | 1-40, -1 | محدودیت پهنای باند (Mbps). برای نامحدود -1 وارد کنید. |
-| `traffic-limit` | -1 | 1+, -1 | حداکثر انتقال داده (GB). برای نامحدود -1 وارد کنید. |
+| `traffic-limit` | نامحدود | 1+, نامحدود, -1 | حداکثر انتقال داده (GB). برای نامحدود Enter یا -1 را وارد کنید (پیشنهادی). |
 
 **مقادیر پیشنهادی بر اساس پردازنده (CPU):**
 

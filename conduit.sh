@@ -40,7 +40,7 @@ TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
 FORCE_REINSTALL=false
 
 # Traffic Limit Defaults
-# TRAFFIC_LIMIT: Maximum allowed traffic in GB (-1 for unlimited)
+# TRAFFIC_LIMIT: Maximum allowed traffic in GB (Enter for unlimited, recommended)
 # TRAFFIC_USED: Running total of traffic consumed in bytes
 # TRAFFIC_RESET_DATE: Timestamp when traffic counter was last reset
 TRAFFIC_LIMIT=-1
@@ -503,7 +503,7 @@ update_traffic_usage() {
 check_traffic_limit() {
     load_traffic_data
     
-    # -1 means unlimited
+    # TRAFFIC_LIMIT=-1 or unset means unlimited (default if user presses Enter)
     if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
         return 0
     fi
@@ -637,18 +637,23 @@ prompt_settings() {
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Traffic Limit${NC} - Maximum total data transfer allowed"
     echo -e "  ${YELLOW}When this limit is reached, Conduit will stop automatically.${NC}"
-    echo -e "  Enter limit in GB, or -1 for unlimited (default)"
+    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
+    echo -e "  Or enter a value in GB to set a limit."
+    echo -e "  You can also enter -1 for unlimited."
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
-    read -p "  Traffic limit in GB [-1 for unlimited]: " input_traffic_limit < /dev/tty || true
-    
-    if [ -z "$input_traffic_limit" ] || [ "$input_traffic_limit" = "-1" ]; then
+    read -p "  Traffic limit in GB [Enter or -1 for unlimited]: " input_traffic_limit < /dev/tty || true
+
+    if [ -z "$input_traffic_limit" ]; then
         TRAFFIC_LIMIT=-1
         echo -e "  Selected: ${GREEN}Unlimited${NC}"
-    elif [[ "$input_traffic_limit" =~ ^[0-9]+$ ]] && [ "$input_traffic_limit" -ge 1 ]; then
+    elif [[ "$input_traffic_limit" =~ ^-?([0-9]+)$ ]] && [ "$input_traffic_limit" -ge 1 ]; then
         TRAFFIC_LIMIT=$input_traffic_limit
         echo -e "  Selected: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
+    elif [ "$input_traffic_limit" = "-1" ]; then
+        TRAFFIC_LIMIT=-1
+        echo -e "  Selected: ${GREEN}Unlimited${NC}"
     else
-        log_warn "Invalid input. Using default: Unlimited"
+        log_warn "Invalid input. Using recommended: Unlimited"
         TRAFFIC_LIMIT=-1
     fi
     
@@ -1270,21 +1275,22 @@ change_traffic_limit() {
     echo -e "  Traffic Used:  ${YELLOW}${used_fmt}${NC}"
     echo ""
     
-    read -p "  New traffic limit in GB (-1 for unlimited): " new_limit < /dev/tty || true
-    
+    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
+    echo -e "  You can also enter -1 for unlimited."
+    read -p "  New traffic limit in GB [Enter or -1 for unlimited]: " new_limit < /dev/tty || true
+
     if [ -z "$new_limit" ]; then
-        echo -e "${YELLOW}No change made.${NC}"
-        return
-    fi
-    
-    if [ "$new_limit" = "-1" ]; then
         TRAFFIC_LIMIT=-1
         save_traffic_data
         echo -e "${GREEN}[✓]${NC} Traffic limit set to: Unlimited"
-    elif [[ "$new_limit" =~ ^[0-9]+$ ]] && [ "$new_limit" -ge 1 ]; then
+    elif [[ "$new_limit" =~ ^-?([0-9]+)$ ]] && [ "$new_limit" -ge 1 ]; then
         TRAFFIC_LIMIT=$new_limit
         save_traffic_data
         echo -e "${GREEN}[✓]${NC} Traffic limit set to: ${TRAFFIC_LIMIT} GB"
+    elif [ "$new_limit" = "-1" ]; then
+        TRAFFIC_LIMIT=-1
+        save_traffic_data
+        echo -e "${GREEN}[✓]${NC} Traffic limit set to: Unlimited"
     else
         echo -e "${RED}[✗]${NC} Invalid input. Traffic limit unchanged."
         return
@@ -2351,8 +2357,10 @@ change_settings() {
     else
         echo "Current traffic limit: ${TRAFFIC_LIMIT} GB"
     fi
-    read -p "New traffic limit in GB (-1 for unlimited) [${TRAFFIC_LIMIT}]: " new_traffic_limit < /dev/tty || true
-    
+    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
+    echo -e "  You can also enter -1 for unlimited."
+    read -p "New traffic limit in GB [Enter or -1 for unlimited]: " new_traffic_limit < /dev/tty || true
+
     # Validate max-clients
     if [ -n "$new_clients" ]; then
         if [[ "$new_clients" =~ ^[0-9]+$ ]] && [ "$new_clients" -ge 1 ] && [ "$new_clients" -le 1000 ]; then
@@ -2361,7 +2369,7 @@ change_settings() {
             echo -e "${YELLOW}Invalid max-clients. Keeping current: ${MAX_CLIENTS}${NC}"
         fi
     fi
-    
+
     # Validate bandwidth
     if [ -n "$new_bandwidth" ]; then
         if [ "$new_bandwidth" = "-1" ]; then
@@ -2379,16 +2387,16 @@ change_settings() {
             echo -e "${YELLOW}Invalid bandwidth. Keeping current: ${BANDWIDTH}${NC}"
         fi
     fi
-    
+
     # Validate traffic limit
-    if [ -n "$new_traffic_limit" ]; then
-        if [ "$new_traffic_limit" = "-1" ]; then
-            TRAFFIC_LIMIT=-1
-        elif [[ "$new_traffic_limit" =~ ^[0-9]+$ ]] && [ "$new_traffic_limit" -ge 1 ]; then
-            TRAFFIC_LIMIT=$new_traffic_limit
-        else
-            echo -e "${YELLOW}Invalid traffic limit. Keeping current: ${TRAFFIC_LIMIT}${NC}"
-        fi
+    if [ -z "$new_traffic_limit" ]; then
+        TRAFFIC_LIMIT=-1
+    elif [[ "$new_traffic_limit" =~ ^-?([0-9]+)$ ]] && [ "$new_traffic_limit" -ge 1 ]; then
+        TRAFFIC_LIMIT=$new_traffic_limit
+    elif [ "$new_traffic_limit" = "-1" ]; then
+        TRAFFIC_LIMIT=-1
+    else
+        echo -e "${YELLOW}Invalid traffic limit. Keeping current: ${TRAFFIC_LIMIT}${NC}"
     fi
     
     # Save settings
