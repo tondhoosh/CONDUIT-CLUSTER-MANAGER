@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.1.0                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.2                          ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -9,7 +9,6 @@
 # ║  • Runs Conduit in Docker with live stats                         ║
 # ║  • Auto-start on boot via systemd/OpenRC/SysVinit                 ║
 # ║  • Easy management via CLI or interactive menu                    ║
-# ║  • Traffic control with configurable limits                       ║
 # ║                                                                   ║
 # ║  GitHub: https://github.com/Psiphon-Inc/conduit                   ║
 # ╚═══════════════════════════════════════════════════════════════════╝
@@ -36,16 +35,7 @@ VERSION="1.0.2"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
-TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
 FORCE_REINSTALL=false
-
-# Traffic Limit Defaults
-# TRAFFIC_LIMIT: Maximum allowed traffic in GB (Enter for unlimited, recommended)
-# TRAFFIC_USED: Running total of traffic consumed in bytes
-# TRAFFIC_RESET_DATE: Timestamp when traffic counter was last reset
-TRAFFIC_LIMIT=-1
-TRAFFIC_USED=0
-TRAFFIC_RESET_DATE=""
 
 # Colors
 RED='\033[0;31m'
@@ -352,383 +342,6 @@ calculate_recommended_clients() {
 }
 
 #═══════════════════════════════════════════════════════════════════════
-# Traffic Control Functions
-#═══════════════════════════════════════════════════════════════════════
-# These functions manage traffic limiting to prevent exceeding quotas.
-# Traffic is tracked by parsing Docker logs for upload/download stats.
-# When the limit is reached, Conduit is stopped until the limit is
-# raised or the traffic counter is reset.
-#═══════════════════════════════════════════════════════════════════════
-
-# load_traffic_data() - Load traffic tracking data from persistent storage
-# Reads TRAFFIC_LIMIT, TRAFFIC_USED, and TRAFFIC_RESET_DATE from traffic.dat
-load_traffic_data() {
-    if [ -f "$TRAFFIC_FILE" ]; then
-        source "$TRAFFIC_FILE"
-    fi
-    # Ensure defaults if not set
-    TRAFFIC_LIMIT=${TRAFFIC_LIMIT:--1}
-    TRAFFIC_USED=${TRAFFIC_USED:-0}
-    TRAFFIC_RESET_DATE=${TRAFFIC_RESET_DATE:-$(date '+%Y-%m-%d %H:%M:%S')}
-}
-
-# save_traffic_data() - Persist traffic tracking data to disk
-# Stores current values of TRAFFIC_LIMIT, TRAFFIC_USED, TRAFFIC_RESET_DATE
-save_traffic_data() {
-    mkdir -p "$INSTALL_DIR"
-    cat > "$TRAFFIC_FILE" << EOF
-# Traffic Control Data - Managed by Conduit Manager
-# Do not edit manually unless you know what you're doing
-TRAFFIC_LIMIT=$TRAFFIC_LIMIT
-TRAFFIC_USED=$TRAFFIC_USED
-TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
-EOF
-}
-
-# parse_traffic_value() - Convert human-readable traffic string to bytes
-# Input: String like "1.5 GB", "500 MB", "1024 KB", "2048 B"
-# Output: Value in bytes (integer)
-parse_traffic_value() {
-    local value="$1"
-    local num unit
-    
-    # Extract numeric part and unit (supports KB/MB/GB/TB and KiB/MiB/GiB/TiB)
-    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
-    
-    # Default to 0 if parsing fails
-    if [ -z "$num" ]; then
-        echo 0
-        return
-    fi
-    
-    # Convert to bytes based on unit
-    case "$unit" in
-        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-    esac
-}
-
-# format_traffic_bytes() - Convert bytes to human-readable format
-# Input: Value in bytes (integer)
-# Output: String like "1.50 GB", "500.00 MB", etc.
-format_traffic_bytes() {
-    local bytes=$1
-    
-    if [ -z "$bytes" ] || [ "$bytes" -eq 0 ] 2>/dev/null; then
-        echo "0 B"
-        return
-    fi
-    
-    # Convert based on size thresholds
-    if [ "$bytes" -ge 1099511627776 ]; then
-        awk "BEGIN {printf \"%.2f TB\", $bytes/1099511627776}"
-    elif [ "$bytes" -ge 1073741824 ]; then
-        awk "BEGIN {printf \"%.2f GB\", $bytes/1073741824}"
-    elif [ "$bytes" -ge 1048576 ]; then
-        awk "BEGIN {printf \"%.2f MB\", $bytes/1048576}"
-    elif [ "$bytes" -ge 1024 ]; then
-        awk "BEGIN {printf \"%.2f KB\", $bytes/1024}"
-    else
-        echo "$bytes B"
-    fi
-}
-
-# get_current_session_traffic() - Get traffic from current container session
-# Parses Docker logs to extract the latest Up/Down values
-# Returns: Total bytes (upload + download) as integer
-get_current_session_traffic() {
-    local logs upload download up_bytes down_bytes
-    
-    # Get the latest STATS line from container logs (larger window to reduce misses)
-    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
-    
-    if [ -z "$logs" ]; then
-        echo 0
-        return
-    fi
-    
-    # Extract Up and Down values (format: "Up: 1.5 GB" or "Down: 500 MB")
-    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    
-    # Convert to bytes
-    up_bytes=$(parse_traffic_value "$upload")
-    down_bytes=$(parse_traffic_value "$download")
-    
-    # Return total
-    echo $((up_bytes + down_bytes))
-}
-
-# update_traffic_usage() - Update the cumulative traffic counter
-# Called periodically to track total traffic across container restarts
-# Stores the delta since last check to accumulate usage
-update_traffic_usage() {
-    local current_session_traffic
-    local last_session_file="$INSTALL_DIR/.last_session_traffic"
-    local last_session_traffic=0
-    
-    # Load last known session traffic
-    if [ -f "$last_session_file" ]; then
-        last_session_traffic=$(cat "$last_session_file" 2>/dev/null || echo 0)
-    fi
-    
-    # Get current session traffic
-    current_session_traffic=$(get_current_session_traffic)
-    
-    # Calculate delta (new traffic since last check)
-    # If current < last, container was restarted - use current as new baseline
-    if [ "$current_session_traffic" -lt "$last_session_traffic" ]; then
-        # Container restarted - current is the new total for this session
-        TRAFFIC_USED=$((TRAFFIC_USED + current_session_traffic))
-    else
-        # Normal case - add the delta
-        local delta=$((current_session_traffic - last_session_traffic))
-        TRAFFIC_USED=$((TRAFFIC_USED + delta))
-    fi
-    
-    # Save current session traffic for next comparison
-    echo "$current_session_traffic" > "$last_session_file"
-    
-    # Persist updated total
-    save_traffic_data
-    enforce_traffic_limit
-}
-
-# check_traffic_limit() - Check if traffic limit has been exceeded
-# Returns: 0 if within limit or unlimited, 1 if limit exceeded
-check_traffic_limit() {
-    load_traffic_data
-    
-    # TRAFFIC_LIMIT=-1 or unset means unlimited (default if user presses Enter)
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return 0
-    fi
-    
-    # Convert limit from GB to bytes for comparison
-    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-    
-    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# enforce_traffic_limit() - Stop Conduit if traffic limit exceeded
-# Called before starting and periodically during operation
-# Returns: 0 if OK to run, 1 if stopped due to limit
-enforce_traffic_limit() {
-    if ! check_traffic_limit; then
-        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-        log_warn "Traffic limit reached! Used: $used_fmt / Limit: ${TRAFFIC_LIMIT} GB"
-        log_warn "Stopping Conduit to prevent exceeding quota."
-        docker stop conduit 2>/dev/null || true
-        log_info "To continue, either:"
-        log_info "  1. Increase the traffic limit: conduit settings"
-        log_info "  2. Reset the traffic counter: conduit traffic reset"
-        return 1
-    fi
-    return 0
-}
-
-# reset_traffic_counter() - Reset the traffic usage counter to zero
-# Called manually by user to start fresh counting period
-reset_traffic_counter() {
-    TRAFFIC_USED=0
-    TRAFFIC_RESET_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-    # Also reset the session tracking file
-    rm -f "$INSTALL_DIR/.last_session_traffic" 2>/dev/null || true
-    save_traffic_data
-    log_success "Traffic counter reset to 0"
-    log_info "Counter reset at: $TRAFFIC_RESET_DATE"
-}
-
-# start_traffic_monitor() - Start background traffic enforcement monitor
-# Runs every 30 seconds while container is running
-# Automatically stops container if traffic limit is exceeded
-# Uses nohup and proper detachment to survive parent script exit
-start_traffic_monitor() {
-    # Skip if no limit is set
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return
-    fi
-
-    # Kill any existing monitor for this container
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    local log_file="$INSTALL_DIR/.traffic_monitor.log"
-    if [ -f "$pid_file" ]; then
-        local old_pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            kill "$old_pid" 2>/dev/null || true
-            sleep 1
-        fi
-    fi
-
-    # Create the monitor script that will run independently
-    local monitor_script="$INSTALL_DIR/.traffic_monitor.sh"
-    cat > "$monitor_script" << 'MONITOR_EOF'
-#!/bin/bash
-INSTALL_DIR="REPLACE_INSTALL_DIR"
-TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
-PID_FILE="$INSTALL_DIR/.traffic_monitor_pid"
-LOG_FILE="$INSTALL_DIR/.traffic_monitor.log"
-
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"; }
-
-# Load traffic data
-load_data() {
-    TRAFFIC_LIMIT=-1
-    TRAFFIC_USED=0
-    [ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
-}
-
-# Parse traffic value to bytes
-parse_traffic_value() {
-    local value="$1"
-    local num unit
-    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
-    [ -z "$num" ] && { echo 0; return; }
-    case "$unit" in
-        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-    esac
-}
-
-# Get current session traffic from docker logs
-get_session_traffic() {
-    local logs upload download up_bytes down_bytes
-    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
-    [ -z "$logs" ] && { echo 0; return; }
-    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    up_bytes=$(parse_traffic_value "$upload")
-    down_bytes=$(parse_traffic_value "$download")
-    echo $((up_bytes + down_bytes))
-}
-
-# Update and check traffic
-check_traffic() {
-    load_data
-    
-    # Skip if unlimited
-    [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null && return 0
-    
-    local last_file="$INSTALL_DIR/.last_session_traffic"
-    local last_session=0
-    [ -f "$last_file" ] && last_session=$(cat "$last_file" 2>/dev/null || echo 0)
-    
-    local current=$(get_session_traffic)
-    
-    if [ "$current" -lt "$last_session" ]; then
-        TRAFFIC_USED=$((TRAFFIC_USED + current))
-    else
-        local delta=$((current - last_session))
-        TRAFFIC_USED=$((TRAFFIC_USED + delta))
-    fi
-    
-    echo "$current" > "$last_file"
-    
-    # Save updated traffic
-    cat > "$TRAFFIC_FILE" << EOF
-TRAFFIC_LIMIT=$TRAFFIC_LIMIT
-TRAFFIC_USED=$TRAFFIC_USED
-TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
-EOF
-    
-    # Check limit
-    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
-        log "LIMIT EXCEEDED: Used $TRAFFIC_USED bytes >= Limit $limit_bytes bytes. Stopping container."
-        docker stop conduit 2>/dev/null
-        return 1
-    fi
-    return 0
-}
-
-# Main loop
-log "Traffic monitor started. PID: $$"
-echo $$ > "$PID_FILE"
-
-# Initial check after short delay for container startup
-sleep 5
-
-while true; do
-    # Exit if container not running
-    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        log "Container stopped. Monitor exiting."
-        break
-    fi
-    
-    check_traffic
-    if [ $? -ne 0 ]; then
-        log "Container stopped due to traffic limit. Monitor exiting."
-        break
-    fi
-    
-    sleep 30
-done
-
-rm -f "$PID_FILE" 2>/dev/null
-log "Traffic monitor stopped."
-MONITOR_EOF
-
-    # Replace placeholder with actual install dir
-    sed -i "s#REPLACE_INSTALL_DIR#$INSTALL_DIR#g" "$monitor_script"
-    chmod +x "$monitor_script"
-
-    # Start monitor in background, fully detached
-    nohup "$monitor_script" > /dev/null 2>&1 &
-    disown 2>/dev/null || true
-    
-    log_info "Traffic monitor started (PID: $!)"
-}
-
-# stop_traffic_monitor() - Stop the background traffic monitor
-stop_traffic_monitor() {
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
-        fi
-        rm -f "$pid_file" 2>/dev/null || true
-    fi
-}
-
-# ensure_traffic_monitor_running() - Start monitor if conduit is running and limit is set
-ensure_traffic_monitor_running() {
-    # Skip when no limit is set
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return
-    fi
-
-    # Only run when container is up
-    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        return
-    fi
-
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            return
-        fi
-    fi
-
-    start_traffic_monitor
-}
-
-#═══════════════════════════════════════════════════════════════════════
 # Interactive Setup
 #═══════════════════════════════════════════════════════════════════════
 
@@ -812,45 +425,13 @@ prompt_settings() {
     fi
     
     echo ""
-    
-    # Traffic Limit prompt
-    # This sets a cap on total data transfer before Conduit auto-stops
-    echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
-    echo -e "  ${BOLD}Traffic Limit${NC} - Maximum total data transfer allowed"
-    echo -e "  ${YELLOW}When this limit is reached, Conduit will stop automatically.${NC}"
-    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
-    echo -e "  Or enter a value in GB to set a limit."
-    echo -e "  You can also enter -1 for unlimited."
-    echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
-    read -p "  Traffic limit in GB [Enter or -1 for unlimited]: " input_traffic_limit < /dev/tty || true
-
-    if [ -z "$input_traffic_limit" ]; then
-        TRAFFIC_LIMIT=-1
-        echo -e "  Selected: ${GREEN}Unlimited${NC}"
-    elif [[ "$input_traffic_limit" =~ ^-?([0-9]+)$ ]] && [ "$input_traffic_limit" -ge 1 ]; then
-        TRAFFIC_LIMIT=$input_traffic_limit
-        echo -e "  Selected: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
-    elif [ "$input_traffic_limit" = "-1" ]; then
-        TRAFFIC_LIMIT=-1
-        echo -e "  Selected: ${GREEN}Unlimited${NC}"
-    else
-        log_warn "Invalid input. Using recommended: Unlimited"
-        TRAFFIC_LIMIT=-1
-    fi
-    
-    echo ""
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Your Settings:${NC}"
-    echo -e "    Max Clients:   ${GREEN}${MAX_CLIENTS}${NC}"
+    echo -e "    Max Clients: ${GREEN}${MAX_CLIENTS}${NC}"
     if [ "$BANDWIDTH" == "-1" ]; then
-        echo -e "    Bandwidth:     ${GREEN}Unlimited${NC}"
+        echo -e "    Bandwidth:   ${GREEN}Unlimited${NC}"
     else
-        echo -e "    Bandwidth:     ${GREEN}${BANDWIDTH}${NC} Mbps"
-    fi
-    if [ "$TRAFFIC_LIMIT" == "-1" ]; then
-        echo -e "    Traffic Limit: ${GREEN}Unlimited${NC}"
-    else
-        echo -e "    Traffic Limit: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
+        echo -e "    Bandwidth:   ${GREEN}${BANDWIDTH}${NC} Mbps"
     fi
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
     echo ""
@@ -859,10 +440,6 @@ prompt_settings() {
     if [[ "$confirm" =~ ^[Nn] ]]; then
         prompt_settings
     fi
-    
-    # Initialize traffic tracking for new installation
-    TRAFFIC_USED=0
-    TRAFFIC_RESET_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -1072,9 +649,6 @@ MAX_CLIENTS=$MAX_CLIENTS
 BANDWIDTH=$BANDWIDTH
 EOF
     
-    # Save traffic control settings
-    save_traffic_data
-    
     if [ ! -f "$INSTALL_DIR/settings.conf" ]; then
         log_error "Failed to save settings. Check disk space and permissions."
         return 1
@@ -1195,10 +769,9 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.1.0"
+VERSION="1.0.2"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
-TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
 
 # Colors
@@ -1214,437 +787,11 @@ NC='\033[0m'
 MAX_CLIENTS=${MAX_CLIENTS:-200}
 BANDWIDTH=${BANDWIDTH:-5}
 
-# Load traffic data
-TRAFFIC_LIMIT=-1
-TRAFFIC_USED=0
-TRAFFIC_RESET_DATE=""
-[ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
-
 # Ensure we're running as root
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Error: This command must be run as root (use sudo conduit)${NC}"
     exit 1
 fi
-
-#═══════════════════════════════════════════════════════════════════════
-# Traffic Control Functions (Management Script)
-#═══════════════════════════════════════════════════════════════════════
-# These functions manage traffic limiting to prevent exceeding quotas.
-# Traffic is tracked by parsing Docker logs for upload/download stats.
-# When the limit is reached, Conduit is stopped until the limit is
-# raised or the traffic counter is reset.
-#═══════════════════════════════════════════════════════════════════════
-
-# save_traffic_data() - Persist traffic tracking data to disk
-save_traffic_data() {
-    mkdir -p "$INSTALL_DIR"
-    cat > "$TRAFFIC_FILE" << EOF
-# Traffic Control Data - Managed by Conduit Manager
-# Do not edit manually unless you know what you're doing
-TRAFFIC_LIMIT=$TRAFFIC_LIMIT
-TRAFFIC_USED=$TRAFFIC_USED
-TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
-EOF
-}
-
-# parse_traffic_value() - Convert human-readable traffic string to bytes
-# Input: String like "1.5 GB", "500 MB", "1024 KB", "2048 B"
-# Output: Value in bytes (integer)
-parse_traffic_value() {
-    local value="$1"
-    local num unit
-    
-    # Extract numeric part and unit (supports KB/MB/GB/TB and KiB/MiB/GiB/TiB)
-    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
-    
-    # Default to 0 if parsing fails
-    if [ -z "$num" ]; then
-        echo 0
-        return
-    fi
-    
-    # Convert to bytes based on unit
-    case "$unit" in
-        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-    esac
-}
-
-# format_traffic_bytes() - Convert bytes to human-readable format
-# Input: Value in bytes (integer)
-# Output: String like "1.50 GB", "500.00 MB", etc.
-format_traffic_bytes() {
-    local bytes=$1
-    
-    if [ -z "$bytes" ] || [ "$bytes" -eq 0 ] 2>/dev/null; then
-        echo "0 B"
-        return
-    fi
-    
-    # Convert based on size thresholds
-    if [ "$bytes" -ge 1099511627776 ]; then
-        awk "BEGIN {printf \"%.2f TB\", $bytes/1099511627776}"
-    elif [ "$bytes" -ge 1073741824 ]; then
-        awk "BEGIN {printf \"%.2f GB\", $bytes/1073741824}"
-    elif [ "$bytes" -ge 1048576 ]; then
-        awk "BEGIN {printf \"%.2f MB\", $bytes/1048576}"
-    elif [ "$bytes" -ge 1024 ]; then
-        awk "BEGIN {printf \"%.2f KB\", $bytes/1024}"
-    else
-        echo "$bytes B"
-    fi
-}
-
-# get_current_session_traffic() - Get traffic from current container session
-# Parses Docker logs to extract the latest Up/Down values
-# Returns: Total bytes (upload + download) as integer
-get_current_session_traffic() {
-    local logs upload download up_bytes down_bytes
-    
-    # Get the latest STATS line from container logs (larger window to reduce misses)
-    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
-    
-    if [ -z "$logs" ]; then
-        echo 0
-        return
-    fi
-    
-    # Extract Up and Down values (format: "Up: 1.5 GB" or "Down: 500 MB")
-    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    
-    # Convert to bytes
-    up_bytes=$(parse_traffic_value "$upload")
-    down_bytes=$(parse_traffic_value "$download")
-    
-    # Return total
-    echo $((up_bytes + down_bytes))
-}
-
-# update_traffic_usage() - Update the cumulative traffic counter
-# Called periodically to track total traffic across container restarts
-update_traffic_usage() {
-    local current_session_traffic
-    local last_session_file="$INSTALL_DIR/.last_session_traffic"
-    local last_session_traffic=0
-    
-    # Load last known session traffic
-    if [ -f "$last_session_file" ]; then
-        last_session_traffic=$(cat "$last_session_file" 2>/dev/null || echo 0)
-    fi
-    
-    # Get current session traffic
-    current_session_traffic=$(get_current_session_traffic)
-    
-    # Calculate delta (new traffic since last check)
-    # If current < last, container was restarted - use current as new baseline
-    if [ "$current_session_traffic" -lt "$last_session_traffic" ]; then
-        # Container restarted - current is the new total for this session
-        TRAFFIC_USED=$((TRAFFIC_USED + current_session_traffic))
-    else
-        # Normal case - add the delta
-        local delta=$((current_session_traffic - last_session_traffic))
-        TRAFFIC_USED=$((TRAFFIC_USED + delta))
-    fi
-    
-    # Save current session traffic for next comparison
-    echo "$current_session_traffic" > "$last_session_file"
-    
-    # Persist updated total
-    save_traffic_data
-    enforce_traffic_limit
-}
-
-# check_traffic_limit() - Check if traffic limit has been exceeded
-# Returns: 0 if within limit or unlimited, 1 if limit exceeded
-check_traffic_limit() {
-    # Reload latest data
-    [ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
-    
-    # -1 means unlimited
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return 0
-    fi
-    
-    # Convert limit from GB to bytes for comparison
-    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-    
-    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# enforce_traffic_limit() - Stop Conduit if traffic limit exceeded
-# Called before starting and periodically during operation
-# Returns: 0 if OK to run, 1 if stopped due to limit
-enforce_traffic_limit() {
-    if ! check_traffic_limit; then
-        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-        echo -e "${RED}[!]${NC} Traffic limit reached! Used: $used_fmt / Limit: ${TRAFFIC_LIMIT} GB"
-        echo -e "${RED}[!]${NC} Stopping Conduit to prevent exceeding quota."
-        docker stop conduit 2>/dev/null || true
-        echo -e "${BLUE}[INFO]${NC} To continue, either:"
-        echo -e "${BLUE}[INFO]${NC}   1. Increase the traffic limit: conduit settings"
-        echo -e "${BLUE}[INFO]${NC}   2. Reset the traffic counter: conduit traffic reset"
-        return 1
-    fi
-    return 0
-}
-
-# start_traffic_monitor() - Start background traffic enforcement monitor
-# Creates a standalone script that runs independently, checking every 30 seconds
-# Uses nohup for proper detachment so it survives script exit
-start_traffic_monitor() {
-    # Skip if no limit is set
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return
-    fi
-
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    local log_file="$INSTALL_DIR/.traffic_monitor.log"
-    
-    # Kill any existing monitor
-    if [ -f "$pid_file" ]; then
-        local old_pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            kill "$old_pid" 2>/dev/null || true
-            sleep 1
-        fi
-    fi
-
-    # Create standalone monitor script
-    local monitor_script="$INSTALL_DIR/.traffic_monitor.sh"
-    cat > "$monitor_script" << 'MONITOR_SCRIPT'
-#!/bin/bash
-INSTALL_DIR="REPLACE_INSTALL_DIR"
-TRAFFIC_FILE="$INSTALL_DIR/traffic.dat"
-PID_FILE="$INSTALL_DIR/.traffic_monitor_pid"
-LOG_FILE="$INSTALL_DIR/.traffic_monitor.log"
-
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"; }
-
-load_data() {
-    TRAFFIC_LIMIT=-1
-    TRAFFIC_USED=0
-    [ -f "$TRAFFIC_FILE" ] && source "$TRAFFIC_FILE"
-}
-
-parse_traffic_value() {
-    local value="$1"
-    local num unit
-    num=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    unit=$(echo "$value" | grep -oE '[KMGT]i?B|B' | head -1)
-    [ -z "$num" ] && { echo 0; return; }
-    case "$unit" in
-        TiB|TB) awk "BEGIN {printf \"%.0f\", $num * 1099511627776}" ;;
-        GiB|GB) awk "BEGIN {printf \"%.0f\", $num * 1073741824}" ;;
-        MiB|MB) awk "BEGIN {printf \"%.0f\", $num * 1048576}" ;;
-        KiB|KB) awk "BEGIN {printf \"%.0f\", $num * 1024}" ;;
-        B)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-        *)      awk "BEGIN {printf \"%.0f\", $num}" ;;
-    esac
-}
-
-get_session_traffic() {
-    local logs upload download up_bytes down_bytes
-    logs=$(docker logs --tail 2000 conduit 2>&1 | grep "STATS" | tail -1)
-    [ -z "$logs" ] && { echo 0; return; }
-    upload=$(echo "$logs" | sed -n 's/.*Up:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    download=$(echo "$logs" | sed -n 's/.*Down:[[:space:]]*\([^|]*\).*/\1/p' | xargs)
-    up_bytes=$(parse_traffic_value "$upload")
-    down_bytes=$(parse_traffic_value "$download")
-    echo $((up_bytes + down_bytes))
-}
-
-check_traffic() {
-    load_data
-    [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null && return 0
-    
-    local last_file="$INSTALL_DIR/.last_session_traffic"
-    local last_session=0
-    [ -f "$last_file" ] && last_session=$(cat "$last_file" 2>/dev/null || echo 0)
-    
-    local current=$(get_session_traffic)
-    
-    if [ "$current" -lt "$last_session" ]; then
-        TRAFFIC_USED=$((TRAFFIC_USED + current))
-    else
-        local delta=$((current - last_session))
-        TRAFFIC_USED=$((TRAFFIC_USED + delta))
-    fi
-    
-    echo "$current" > "$last_file"
-    
-    cat > "$TRAFFIC_FILE" << EOF
-TRAFFIC_LIMIT=$TRAFFIC_LIMIT
-TRAFFIC_USED=$TRAFFIC_USED
-TRAFFIC_RESET_DATE="$TRAFFIC_RESET_DATE"
-EOF
-    
-    local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-    if [ "$TRAFFIC_USED" -ge "$limit_bytes" ]; then
-        log "LIMIT EXCEEDED: Used $TRAFFIC_USED >= Limit $limit_bytes. Stopping container."
-        docker stop conduit 2>/dev/null
-        return 1
-    fi
-    return 0
-}
-
-log "Traffic monitor started. PID: $$"
-echo $$ > "$PID_FILE"
-
-sleep 5
-
-while true; do
-    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        log "Container stopped. Monitor exiting."
-        break
-    fi
-    
-    check_traffic
-    if [ $? -ne 0 ]; then
-        log "Container stopped due to traffic limit. Monitor exiting."
-        break
-    fi
-    
-    sleep 30
-done
-
-rm -f "$PID_FILE" 2>/dev/null
-log "Traffic monitor stopped."
-MONITOR_SCRIPT
-
-    sed -i "s#REPLACE_INSTALL_DIR#$INSTALL_DIR#g" "$monitor_script"
-    chmod +x "$monitor_script"
-
-    nohup "$monitor_script" > /dev/null 2>&1 &
-    disown 2>/dev/null || true
-}
-
-# stop_traffic_monitor() - Stop the background traffic monitor
-stop_traffic_monitor() {
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
-        fi
-        rm -f "$pid_file" 2>/dev/null || true
-    fi
-}
-
-# ensure_traffic_monitor_running() - Start monitor if conduit is running and limit is set
-ensure_traffic_monitor_running() {
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        return
-    fi
-    if ! docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        return
-    fi
-    local pid_file="$INSTALL_DIR/.traffic_monitor_pid"
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            return
-        fi
-    fi
-    start_traffic_monitor
-}
-
-# reset_traffic_counter() - Reset the traffic usage counter to zero
-reset_traffic_counter() {
-    TRAFFIC_USED=0
-    TRAFFIC_RESET_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-    # Also reset the session tracking file
-    rm -f "$INSTALL_DIR/.last_session_traffic" 2>/dev/null || true
-    save_traffic_data
-    echo -e "${GREEN}[✓]${NC} Traffic counter reset to 0"
-    echo -e "${BLUE}[INFO]${NC} Counter reset at: $TRAFFIC_RESET_DATE"
-}
-
-# show_traffic_status() - Display current traffic usage and limits
-show_traffic_status() {
-    # Update traffic data first
-    if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        update_traffic_usage
-    fi
-    
-    local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-    
-    echo ""
-    echo -e "${CYAN}═══ TRAFFIC CONTROL ═══${NC}"
-    echo -e "  Traffic Used:    ${YELLOW}${used_fmt}${NC}"
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        echo -e "  Traffic Limit:   ${GREEN}Unlimited${NC}"
-    else
-        local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-        local percent=0
-        if [ "$limit_bytes" -gt 0 ]; then
-            percent=$(awk "BEGIN {printf \"%.1f\", ($TRAFFIC_USED / $limit_bytes) * 100}")
-        fi
-        echo -e "  Traffic Limit:   ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
-        echo -e "  Usage:           ${YELLOW}${percent}%${NC}"
-        
-        # Show warning if approaching limit
-        if [ "${percent%.*}" -ge 90 ] 2>/dev/null; then
-            echo -e "  ${RED}⚠ WARNING: Approaching traffic limit!${NC}"
-        elif [ "${percent%.*}" -ge 75 ] 2>/dev/null; then
-            echo -e "  ${YELLOW}⚠ Notice: 75%+ of traffic limit used${NC}"
-        fi
-    fi
-    echo -e "  Counter Reset:   ${TRAFFIC_RESET_DATE:-Never}"
-    echo ""
-}
-
-# change_traffic_limit() - Interactive prompt to change traffic limit
-change_traffic_limit() {
-    echo ""
-    echo -e "${CYAN}═══ CHANGE TRAFFIC LIMIT ═══${NC}"
-    echo ""
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        echo -e "  Current Limit: ${GREEN}Unlimited${NC}"
-    else
-        echo -e "  Current Limit: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
-    fi
-    local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-    echo -e "  Traffic Used:  ${YELLOW}${used_fmt}${NC}"
-    echo ""
-    
-    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
-    echo -e "  You can also enter -1 for unlimited."
-    read -p "  New traffic limit in GB [Enter or -1 for unlimited]: " new_limit < /dev/tty || true
-
-    if [ -z "$new_limit" ]; then
-        TRAFFIC_LIMIT=-1
-        save_traffic_data
-        echo -e "${GREEN}[✓]${NC} Traffic limit set to: Unlimited"
-    elif [[ "$new_limit" =~ ^-?([0-9]+)$ ]] && [ "$new_limit" -ge 1 ]; then
-        TRAFFIC_LIMIT=$new_limit
-        save_traffic_data
-        echo -e "${GREEN}[✓]${NC} Traffic limit set to: ${TRAFFIC_LIMIT} GB"
-    elif [ "$new_limit" = "-1" ]; then
-        TRAFFIC_LIMIT=-1
-        save_traffic_data
-        echo -e "${GREEN}[✓]${NC} Traffic limit set to: Unlimited"
-    else
-        echo -e "${RED}[✗]${NC} Invalid input. Traffic limit unchanged."
-        return
-    fi
-    
-    # Check if we can now start (if was stopped due to limit)
-    if check_traffic_limit; then
-        echo -e "${GREEN}[✓]${NC} Traffic is within the new limit. You can start Conduit."
-    else
-        echo -e "${YELLOW}[!]${NC} Traffic still exceeds limit. Reset counter or increase limit."
-    fi
-}
 
 # Check if Docker is available
 check_docker() {
@@ -1693,9 +840,6 @@ run_conduit_container() {
         --network host \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
-    
-    # Start background traffic monitoring
-    start_traffic_monitor
 }
 
 print_header() {
@@ -2526,33 +1670,6 @@ show_status() {
     else
         echo -e "  Bandwidth:    ${BANDWIDTH} Mbps${EL}"
     fi
-    
-    # Traffic Control Section
-    # Update traffic data if container is running
-    if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-        ensure_traffic_monitor_running
-        update_traffic_usage
-    fi
-    local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-    echo ""
-    echo -e "${CYAN}═══ TRAFFIC CONTROL ═══${NC}${EL}"
-    echo -e "  Traffic Used:   ${YELLOW}${used_fmt}${NC}${EL}"
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        echo -e "  Traffic Limit:  ${GREEN}Unlimited${NC}${EL}"
-    else
-        local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-        local percent=0
-        if [ "$limit_bytes" -gt 0 ] && [ "$TRAFFIC_USED" -gt 0 ]; then
-            percent=$(awk "BEGIN {printf \"%.1f\", ($TRAFFIC_USED / $limit_bytes) * 100}")
-        fi
-        echo -e "  Traffic Limit:  ${GREEN}${TRAFFIC_LIMIT} GB${NC} (${percent}% used)${EL}"
-        # Show warning if approaching limit
-        if [ "${percent%.*}" -ge 90 ] 2>/dev/null; then
-            echo -e "  ${RED}⚠ WARNING: Approaching traffic limit!${NC}${EL}"
-        elif [ "${percent%.*}" -ge 75 ] 2>/dev/null; then
-            echo -e "  ${YELLOW}⚠ Notice: 75%+ of traffic limit used${NC}${EL}"
-        fi
-    fi
 
     
     echo ""
@@ -2577,33 +1694,12 @@ show_status() {
 
 start_conduit() {
     echo "Starting Conduit..."
-    
-    # Check traffic limit before starting
-    # If limit exceeded, refuse to start until limit is raised or reset
-    if ! check_traffic_limit; then
-        enforce_traffic_limit
-        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-        echo ""
-        echo -e "${RED}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║                    ⚠️  TRAFFIC LIMIT EXCEEDED                      ║${NC}"
-        echo -e "${RED}╚═══════════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        echo -e "  Traffic Used:  ${YELLOW}${used_fmt}${NC}"
-        echo -e "  Traffic Limit: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
-        echo ""
-        echo -e "  Conduit cannot start until you either:"
-        echo -e "    1. Increase the traffic limit:  ${CYAN}conduit traffic limit${NC}"
-        echo -e "    2. Reset the traffic counter:   ${CYAN}conduit traffic reset${NC}"
-        echo ""
-        return 1
-    fi
 
     # Check if container exists (running or stopped)
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
         # Check if container is already running
         if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
             echo -e "${GREEN}✓ Conduit is already running${NC}"
-            ensure_traffic_monitor_running
             return 0
         fi
 
@@ -2629,8 +1725,6 @@ start_conduit() {
 
 stop_conduit() {
     echo "Stopping Conduit..."
-    # Stop traffic monitoring first
-    stop_traffic_monitor
     if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
         docker stop conduit 2>/dev/null
         echo -e "${YELLOW}✓ Conduit stopped${NC}"
@@ -2641,25 +1735,6 @@ stop_conduit() {
 
 restart_conduit() {
     echo "Restarting Conduit..."
-    # Stop traffic monitoring first
-    stop_traffic_monitor
-    if ! check_traffic_limit; then
-        enforce_traffic_limit
-        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-        echo ""
-        echo -e "${RED}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║                    ⚠️  TRAFFIC LIMIT EXCEEDED                      ║${NC}"
-        echo -e "${RED}╚═══════════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        echo -e "  Traffic Used:  ${YELLOW}${used_fmt}${NC}"
-        echo -e "  Traffic Limit: ${GREEN}${TRAFFIC_LIMIT} GB${NC}"
-        echo ""
-        echo -e "  Conduit cannot restart until you either:"
-        echo -e "    1. Increase the traffic limit:  ${CYAN}conduit traffic limit${NC}"
-        echo -e "    2. Reset the traffic counter:   ${CYAN}conduit traffic reset${NC}"
-        echo ""
-        return 1
-    fi
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]conduit$"; then
         # Stop and remove the existing container
         docker stop conduit 2>/dev/null || true
@@ -2689,13 +1764,6 @@ change_settings() {
     else
         echo -e "  Bandwidth:   ${BANDWIDTH} Mbps"
     fi
-    local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-    echo -e "  Traffic Used:  ${used_fmt}"
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        echo -e "  Traffic Limit: Unlimited"
-    else
-        echo -e "  Traffic Limit: ${TRAFFIC_LIMIT} GB"
-    fi
     echo ""
     
     read -p "New max-clients (1-1000) [${MAX_CLIENTS}]: " new_clients < /dev/tty || true
@@ -2719,17 +1787,6 @@ change_settings() {
         fi
     fi
     
-    # Traffic Limit prompt
-    echo ""
-    if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-        echo "Current traffic limit: Unlimited"
-    else
-        echo "Current traffic limit: ${TRAFFIC_LIMIT} GB"
-    fi
-    echo -e "  Press Enter for recommended: ${GREEN}unlimited${NC} (no cap)"
-    echo -e "  You can also enter -1 for unlimited."
-    read -p "New traffic limit in GB [Enter or -1 for unlimited]: " new_traffic_limit < /dev/tty || true
-
     # Validate max-clients
     if [ -n "$new_clients" ]; then
         if [[ "$new_clients" =~ ^[0-9]+$ ]] && [ "$new_clients" -ge 1 ] && [ "$new_clients" -le 1000 ]; then
@@ -2738,7 +1795,7 @@ change_settings() {
             echo -e "${YELLOW}Invalid max-clients. Keeping current: ${MAX_CLIENTS}${NC}"
         fi
     fi
-
+    
     # Validate bandwidth
     if [ -n "$new_bandwidth" ]; then
         if [ "$new_bandwidth" = "-1" ]; then
@@ -2756,26 +1813,12 @@ change_settings() {
             echo -e "${YELLOW}Invalid bandwidth. Keeping current: ${BANDWIDTH}${NC}"
         fi
     fi
-
-    # Validate traffic limit
-    if [ -z "$new_traffic_limit" ]; then
-        TRAFFIC_LIMIT=-1
-    elif [[ "$new_traffic_limit" =~ ^-?([0-9]+)$ ]] && [ "$new_traffic_limit" -ge 1 ]; then
-        TRAFFIC_LIMIT=$new_traffic_limit
-    elif [ "$new_traffic_limit" = "-1" ]; then
-        TRAFFIC_LIMIT=-1
-    else
-        echo -e "${YELLOW}Invalid traffic limit. Keeping current: ${TRAFFIC_LIMIT}${NC}"
-    fi
     
     # Save settings
     cat > "$INSTALL_DIR/settings.conf" << EOF
 MAX_CLIENTS=$MAX_CLIENTS
 BANDWIDTH=$BANDWIDTH
 EOF
-
-    # Save traffic data
-    save_traffic_data
 
     echo ""
     echo "Updating and recreating Conduit container with new settings..."
@@ -2784,14 +1827,6 @@ EOF
     echo "Pulling latest image..."
     docker pull $CONDUIT_IMAGE 2>/dev/null || echo -e "${YELLOW}Could not pull latest image, using cached version${NC}"
     fix_volume_permissions
-    
-    # Check traffic limit before starting
-    if ! check_traffic_limit; then
-        echo -e "${YELLOW}[!]${NC} Traffic limit exceeded. Container not started."
-        echo -e "${YELLOW}[!]${NC} Use 'conduit traffic reset' to reset the counter."
-        return 0
-    fi
-    
     run_conduit_container
 
     if [ $? -eq 0 ]; then
@@ -2933,108 +1968,6 @@ uninstall_all() {
     echo ""
 }
 
-#═══════════════════════════════════════════════════════════════════════
-# traffic_menu() - Interactive menu for traffic control options
-#═══════════════════════════════════════════════════════════════════════
-# Provides options to:
-#   1. View current traffic usage and limit
-#   2. Change traffic limit
-#   3. Reset traffic counter
-#═══════════════════════════════════════════════════════════════════════
-traffic_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║                    📊 TRAFFIC CONTROL                             ║${NC}"
-        echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        
-        # Show current traffic status
-        # Update traffic data if container is running
-        if docker ps 2>/dev/null | grep -q "[[:space:]]conduit$"; then
-            ensure_traffic_monitor_running
-            update_traffic_usage
-        fi
-        
-        local used_fmt=$(format_traffic_bytes $TRAFFIC_USED)
-        echo -e "  ${BOLD}Current Usage:${NC}"
-        echo -e "    Traffic Used:    ${YELLOW}${used_fmt}${NC}"
-        if [ "$TRAFFIC_LIMIT" -eq -1 ] 2>/dev/null; then
-            echo -e "    Traffic Limit:   ${GREEN}Unlimited${NC}"
-        else
-            local limit_bytes=$((TRAFFIC_LIMIT * 1073741824))
-            local percent=0
-            if [ "$limit_bytes" -gt 0 ] && [ "$TRAFFIC_USED" -gt 0 ]; then
-                percent=$(awk "BEGIN {printf \"%.1f\", ($TRAFFIC_USED / $limit_bytes) * 100}")
-            fi
-            echo -e "    Traffic Limit:   ${GREEN}${TRAFFIC_LIMIT} GB${NC} (${percent}% used)"
-            
-            # Progress bar
-            local bar_width=40
-            local filled=$(awk "BEGIN {printf \"%.0f\", ($percent / 100) * $bar_width}")
-            [ "$filled" -gt "$bar_width" ] && filled=$bar_width
-            local empty=$((bar_width - filled))
-            printf "    ["
-            printf "%0.s█" $(seq 1 $filled 2>/dev/null) || true
-            printf "%0.s░" $(seq 1 $empty 2>/dev/null) || true
-            printf "] ${percent}%%\n"
-            
-            # Warning messages
-            if [ "${percent%.*}" -ge 90 ] 2>/dev/null; then
-                echo ""
-                echo -e "    ${RED}⚠ WARNING: Approaching traffic limit!${NC}"
-            elif [ "${percent%.*}" -ge 75 ] 2>/dev/null; then
-                echo ""
-                echo -e "    ${YELLOW}⚠ Notice: 75%+ of traffic limit used${NC}"
-            fi
-        fi
-        echo -e "    Counter Reset:   ${TRAFFIC_RESET_DATE:-Never}"
-        echo ""
-        
-        echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
-        echo -e "  ${BOLD}Options:${NC}"
-        echo -e "  1. 📝 Change traffic limit"
-        echo -e "  2. 🔄 Reset traffic counter"
-        echo -e "  0. ← Back to main menu"
-        echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
-        echo ""
-        
-        read -p "  Enter choice: " choice < /dev/tty || { echo "Input error."; return; }
-        
-        case $choice in
-            1)
-                change_traffic_limit
-                read -n 1 -s -r -p "Press any key to continue..." < /dev/tty || true
-                ;;
-            2)
-                echo ""
-                read -p "  Are you sure you want to reset the traffic counter? [y/N]: " confirm < /dev/tty || true
-                if [[ "$confirm" =~ ^[Yy] ]]; then
-                    reset_traffic_counter
-                    # If container was stopped due to limit, offer to start it
-                    if check_traffic_limit; then
-                        echo ""
-                        read -p "  Start Conduit now? [Y/n]: " start_now < /dev/tty || true
-                        if [[ ! "$start_now" =~ ^[Nn] ]]; then
-                            start_conduit
-                        fi
-                    fi
-                else
-                    echo -e "${YELLOW}Reset cancelled.${NC}"
-                fi
-                read -n 1 -s -r -p "Press any key to continue..." < /dev/tty || true
-                ;;
-            0)
-                return
-                ;;
-            *)
-                echo -e "${RED}Invalid choice${NC}"
-                sleep 1
-                ;;
-        esac
-    done
-}
-
 show_menu() {
     local redraw=true
     while true; do
@@ -3048,7 +1981,7 @@ show_menu() {
             echo -e "  1. 📈 View status dashboard"
             echo -e "  2. 📊 Live connection stats"
             echo -e "  3. 📋 View logs (filtered)"
-            echo -e "  4. ⚙️  Change settings (max-clients, bandwidth, traffic limit)"
+            echo -e "  4. ⚙️  Change settings (max-clients, bandwidth)"
             echo ""
             echo -e "  5. 🔄 Update Conduit"
             echo -e "  6. ▶️  Start Conduit"
@@ -3056,7 +1989,6 @@ show_menu() {
             echo -e "  8. 🔁 Restart Conduit"
             echo ""
             echo -e "  9. 🌍 View live peers by country (Live Map)"
-            echo -e "  t. 📊 Traffic control (view/reset usage)"
             echo ""
             echo -e "  h. 🩺 Health check"
             echo -e "  b. 💾 Backup node key"
@@ -3113,10 +2045,6 @@ show_menu() {
                 show_peers
                 redraw=true
                 ;;
-            t|T)
-                traffic_menu
-                redraw=true
-                ;;
             h|H)
                 health_check
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
@@ -3169,18 +2097,13 @@ show_help() {
     echo "  stop      Stop Conduit container"
     echo "  restart   Restart Conduit container"
     echo "  update    Update to latest Conduit image"
-    echo "  settings  Change max-clients/bandwidth/traffic limit"
+    echo "  settings  Change max-clients/bandwidth"
     echo "  backup    Backup Conduit node identity key"
     echo "  restore   Restore Conduit node identity from backup"
     echo "  uninstall Remove everything (container, data, service)"
     echo "  menu      Open interactive menu (default)"
     echo "  version   Show version information"
     echo "  help      Show this help"
-    echo ""
-    echo "Traffic Control:"
-    echo "  traffic         Show traffic usage and limit status"
-    echo "  traffic limit   Change traffic limit"
-    echo "  traffic reset   Reset traffic counter to zero"
 }
 
 show_version() {
@@ -3501,14 +2424,6 @@ case "${1:-menu}" in
     uninstall) uninstall_all ;;
     version|-v|--version) show_version ;;
     help|-h|--help) show_help ;;
-    traffic)
-        # Traffic control subcommands
-        case "${2:-}" in
-            limit)  change_traffic_limit ;;
-            reset)  reset_traffic_counter ;;
-            *)      show_traffic_status ;;
-        esac
-        ;;
     menu|*)   show_menu ;;
 esac
 MANAGEMENT
@@ -3545,18 +2460,13 @@ print_summary() {
     echo -e "${GREEN}║${NC}  Conduit is running and ready to help users!                      ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                                   ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  📊 Settings:                                                     ${GREEN}║${NC}"
-    printf "${GREEN}║${NC}     Max Clients:   ${CYAN}%-4s${NC}                                           ${GREEN}║${NC}\n" "${MAX_CLIENTS}"
+    printf "${GREEN}║${NC}     Max Clients: ${CYAN}%-4s${NC}                                             ${GREEN}║${NC}\n" "${MAX_CLIENTS}"
     if [ "$BANDWIDTH" == "-1" ]; then
-        echo -e "${GREEN}║${NC}     Bandwidth:     ${CYAN}Unlimited${NC}                                      ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}     Bandwidth:   ${CYAN}Unlimited${NC}                                        ${GREEN}║${NC}"
     else
-        printf "${GREEN}║${NC}     Bandwidth:     ${CYAN}%-4s${NC} Mbps                                      ${GREEN}║${NC}\n" "${BANDWIDTH}"
+        printf "${GREEN}║${NC}     Bandwidth:   ${CYAN}%-4s${NC} Mbps                                        ${GREEN}║${NC}\n" "${BANDWIDTH}"
     fi
-    if [ "$TRAFFIC_LIMIT" == "-1" ]; then
-        echo -e "${GREEN}║${NC}     Traffic Limit: ${CYAN}Unlimited${NC}                                      ${GREEN}║${NC}"
-    else
-        printf "${GREEN}║${NC}     Traffic Limit: ${CYAN}%-4s${NC} GB                                        ${GREEN}║${NC}\n" "${TRAFFIC_LIMIT}"
-    fi
-    printf "${GREEN}║${NC}     Auto-start:    ${CYAN}%-18s${NC}                             ${GREEN}║${NC}\n" "${init_type}"
+    printf "${GREEN}║${NC}     Auto-start:  ${CYAN}%-20s${NC}                             ${GREEN}║${NC}\n" "${init_type}"
     echo -e "${GREEN}║${NC}                                                                   ${GREEN}║${NC}"
     echo -e "${GREEN}╠═══════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}  COMMANDS:                                                        ${GREEN}║${NC}"
@@ -3564,8 +2474,8 @@ print_summary() {
     echo -e "${GREEN}║${NC}  ${CYAN}conduit${NC}               # Open management menu                    ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}conduit stats${NC}         # View live statistics + CPU/RAM          ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}conduit status${NC}        # Quick status with resource usage        ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}conduit traffic${NC}       # Traffic control and usage               ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}conduit settings${NC}      # Change max-clients/bandwidth/limit      ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${CYAN}conduit logs${NC}          # View raw logs                           ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${CYAN}conduit settings${NC}      # Change max-clients/bandwidth            ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}conduit uninstall${NC}     # Remove everything                       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                                   ${GREEN}║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
@@ -3780,6 +2690,6 @@ main() {
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 1.1.0
+# REACHED END OF SCRIPT - VERSION 1.0.2
 # ###############################################################################
 main "$@"
