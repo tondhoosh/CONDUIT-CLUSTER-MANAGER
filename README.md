@@ -144,6 +144,29 @@ sudo bash conduit.sh --help
 5. **Auto-Start Configuration** - Sets up systemd/OpenRC/SysVinit service (Linux)
 6. **CLI Installation** - Creates the `conduit` management command
 
+## Testing
+
+### Linux
+```bash
+sudo bash conduit.sh --reinstall
+conduit version
+conduit status
+conduit stats
+```
+
+### macOS (Apple Silicon)
+```bash
+bash conduit.sh --reinstall
+conduit version
+conduit status
+conduit stats
+sudo conduit peers
+```
+
+Notes:
+- `conduit peers` requires sudo on macOS because it uses `tcpdump`
+- If Docker Desktop isn’t running, the installer will prompt to start it
+
 ## Security
 
 - **Secure Backups**: Node identity keys are stored with restricted permissions (600)
@@ -236,6 +259,29 @@ conduit help         # راهنما
 |-------|---------|--------|---------|
 | `max-clients` | 200 | 1-1000 | حداکثر کاربران همزمان |
 | `bandwidth` | 5 | 1-40, -1 | محدودیت پهنای باند (Mbps). برای نامحدود -1 وارد کنید. |
+
+## تست و بررسی
+
+### لینوکس
+```bash
+sudo bash conduit.sh --reinstall
+conduit version
+conduit status
+conduit stats
+```
+
+### macOS (Apple Silicon)
+```bash
+bash conduit.sh --reinstall
+conduit version
+conduit status
+conduit stats
+sudo conduit peers
+```
+
+نکات:
+- دستور `conduit peers` روی macOS نیاز به sudo دارد (tcpdump)
+- اگر Docker Desktop فعال نباشد، نصب‌کننده درخواست اجرای آن را می‌دهد
 
 **مقادیر پیشنهادی بر اساس پردازنده (CPU):**
 
