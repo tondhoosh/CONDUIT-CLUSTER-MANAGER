@@ -1,24 +1,31 @@
 # Conduit Manager
 
-A powerful management tool for deploying and managing Psiphon Conduit nodes on Linux servers. Help users access the open internet during network restrictions.
+A powerful management tool for deploying and managing Psiphon Conduit nodes on Linux servers and macOS (Apple Silicon). Help users access the open internet during network restrictions.
 
 ## Quick Install
 
+### Linux
 ```bash
 curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | sudo bash
 ```
 
-Or download and run manually:
+### macOS (Apple Silicon)
+```bash
+curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | bash
+```
+
+Or download and run manually (Linux/macOS):
 
 ```bash
 wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh
-sudo bash conduit.sh
+sudo bash conduit.sh   # Linux
+bash conduit.sh        # macOS
 ```
 
 ## Features
 
 - **One-Click Deployment** - Automatically installs Docker and configures everything
-- **Multi-Distro Support** - Works on Ubuntu, Debian, CentOS, Fedora, Arch, Alpine, openSUSE
+- **Multi-Distro Support** - Works on Ubuntu, Debian, CentOS, Fedora, Arch, Alpine, openSUSE, and macOS (Apple Silicon)
 - **Auto-Start on Boot** - Supports systemd, OpenRC, and SysVinit
 - **Live Monitoring** - Real-time connection stats with CPU/RAM monitoring
 - **Live Peer Traffic** - Real-time traffic monitoring by country with GeoIP lookup
@@ -40,6 +47,7 @@ sudo bash conduit.sh
 | Arch | Arch Linux, Manjaro, EndeavourOS |
 | SUSE | openSUSE Leap, openSUSE Tumbleweed |
 | Alpine | Alpine Linux |
+| macOS | Apple Silicon (arm64) |
 
 ## CLI Reference
 
@@ -115,17 +123,25 @@ sudo bash conduit.sh --help
 
 ## Requirements
 
-- Linux server (any supported distribution)
-- Root/sudo access
+- Linux server (any supported distribution) or macOS Apple Silicon
+- Root/sudo access (Linux)
+- macOS: run without sudo
 - Internet connection
 - Minimum 512MB RAM (1GB+ recommended)
+
+### macOS Notes
+- Docker runs via Docker Desktop (installed via Homebrew cask when needed)
+- Host networking is not available on Docker Desktop; ports 443/TCP+UDP are published
+- Auto-start is not configured on macOS (launchd not implemented)
+- Peers-by-country requires a MaxMind GeoLite2 license key (prompted during install)
+- `conduit peers` requires sudo on macOS due to `tcpdump`
 
 ## How It Works
 
 1. **Detection** - Identifies your Linux distribution and init system
-2. **Docker Setup** - Installs Docker if not present
+2. **Docker Setup** - Installs Docker if not present (Docker Desktop on macOS)
 3. **Container Deployment** - Pulls and runs the official Psiphon Conduit image
-5. **Auto-Start Configuration** - Sets up systemd/OpenRC/SysVinit service
+5. **Auto-Start Configuration** - Sets up systemd/OpenRC/SysVinit service (Linux)
 6. **CLI Installation** - Creates the `conduit` management command
 
 ## Security
@@ -143,23 +159,31 @@ sudo bash conduit.sh --help
 
 ## نصب سریع
 
+### لینوکس
 دستور زیر را در ترمینال سرور اجرا کنید:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | sudo bash
 ```
 
-یا دانلود و اجرای دستی:
+### macOS (Apple Silicon)
+```bash
+curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | bash
+```
+
+یا دانلود و اجرای دستی (لینوکس/مک):
 
 ```bash
 wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh
 sudo bash conduit.sh
+bash conduit.sh (مک برای فقط)
 ```
 
 ## ویژگی‌ها
 
 - **نصب با یک کلیک** - داکر و تمام موارد مورد نیاز به صورت خودکار نصب می‌شود
 - **پشتیبانی از توزیع‌های مختلف** - اوبونتو، دبیان، سنت‌اواس، فدورا، آرچ، آلپاین
+- **پشتیبانی از macOS (Apple Silicon)** - نصب و اجرا روی مک‌های M‑chip
 - **راه‌اندازی خودکار** - پس از ریستارت سرور، سرویس به صورت خودکار اجرا می‌شود
 - **مانیتورینگ زنده** - نمایش تعداد کاربران متصل و مصرف منابع
 - **مانیتورینگ ترافیک** - نمایش لحظه‌ای ترافیک بر اساس کشور با GeoIP
@@ -224,10 +248,18 @@ conduit help         # راهنما
 
 ## پیش‌نیازها
 
-- سرور لینوکس
-- دسترسی root یا sudo
+- سرور لینوکس یا macOS Apple Silicon
+- دسترسی root یا sudo (لینوکس)
+- در macOS بدون sudo اجرا شود
 - اتصال اینترنت
 - حداقل 512 مگابایت رم
+
+### نکات مخصوص macOS
+- داکر از طریق Docker Desktop اجرا می‌شود
+- به‌جای Host Networking، پورت‌های 443/TCP و 443/UDP منتشر می‌شوند
+- راه‌اندازی خودکار روی macOS تنظیم نمی‌شود (launchd اضافه نشده)
+- نمایش کشورها نیاز به کلید MaxMind GeoLite2 دارد (در نصب پرسیده می‌شود)
+- دستور `conduit peers` روی macOS نیاز به sudo دارد (tcpdump)
 
 </div>
 
