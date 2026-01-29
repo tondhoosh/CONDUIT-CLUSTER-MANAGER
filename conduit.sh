@@ -3843,7 +3843,10 @@ health_check() {
                 echo -e "${GREEN}OK${NC} (Connected, awaiting peers)"
             fi
         else
-            local info_lines=$(echo "$hc_logs" | grep -c "\[INFO\]" 2>/dev/null || echo 0)
+            local info_lines=0
+            if [ -n "$hc_logs" ]; then
+                info_lines=$(echo "$hc_logs" | grep "\[INFO\]" | wc -l | tr -d ' ')
+            fi
             info_lines=${info_lines:-0}
             if [ "$info_lines" -gt 0 ] 2>/dev/null; then
                 echo -e "${YELLOW}CONNECTING${NC} - Establishing connection..."
