@@ -31,10 +31,11 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
-BACKUP_DIR="$INSTALL_DIR/backups"
+# BACKUP_DIR depends on INSTALL_DIR and may be overridden during OS detection (e.g. macOS).
+BACKUP_DIR=""
 FORCE_REINSTALL=false
 
 # Colors
@@ -77,6 +78,22 @@ log_error() {
 }
 
 check_root() {
+    # On macOS we support user installs (no root) by default, and we *avoid* sudo because Homebrew
+    # refuses to run as root.
+    if [ "${OS_FAMILY:-unknown}" = "macos" ]; then
+        if [ "$EUID" -eq 0 ]; then
+            log_error "Do not run this script with sudo on macOS."
+            log_info "Homebrew will refuse to install packages as root."
+            log_info "Run it like this instead:"
+            log_info "  bash $0"
+            log_info ""
+            log_info "If you downloaded via curl, remove sudo:"
+            log_info "  curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.sh | bash"
+            exit 1
+        fi
+        return 0
+    fi
+
     if [ "$EUID" -ne 0 ]; then
         log_error "This script must be run as root (use sudo)"
         exit 1
@@ -91,7 +108,13 @@ detect_os() {
     PKG_MANAGER="unknown"
     
     # Detect OS from /etc/os-release
-    if [ -f /etc/os-release ]; then
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+        OS="macos"
+        OS_FAMILY="macos"
+        OS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo "unknown")"
+        PKG_MANAGER="brew"
+        HAS_SYSTEMD=false
+    elif [ -f /etc/os-release ]; then
         . /etc/os-release
         OS="$ID"
         OS_VERSION="${VERSION_ID:-unknown}"
@@ -111,6 +134,10 @@ detect_os() {
     
     # Determine OS family and package manager
     case "$OS" in
+        macos)
+            OS_FAMILY="macos"
+            PKG_MANAGER="brew"
+            ;;
         ubuntu|debian|linuxmint|pop|elementary|zorin|kali|raspbian)
             OS_FAMILY="debian"
             PKG_MANAGER="apt"
@@ -145,6 +172,12 @@ detect_os() {
     if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
         HAS_SYSTEMD=true
     fi
+
+    # macOS default install dir: avoid requiring sudo for /opt
+    if [ "$OS_FAMILY" = "macos" ] && [ "$INSTALL_DIR" = "/opt/conduit" ]; then
+        INSTALL_DIR="$HOME/.conduit"
+    fi
+    BACKUP_DIR="$INSTALL_DIR/backups"
     
     log_info "Detected: $OS ($OS_FAMILY family), Package manager: $PKG_MANAGER"
 
@@ -154,11 +187,60 @@ detect_os() {
     fi
 }
 
+ensure_install_dir_writable() {
+    # On macOS we aim for a fully non-sudo install. If a previous sudo run created a root-owned
+    # directory (common), fall back to a user-writable install dir automatically.
+    if [ "$OS_FAMILY" != "macos" ]; then
+        return 0
+    fi
+
+    mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+
+    if [ -w "$INSTALL_DIR" ]; then
+        return 0
+    fi
+
+    log_warn "Install directory is not writable: $INSTALL_DIR"
+    log_warn "This usually happens if you previously ran the installer with sudo."
+
+    local fallback_dir="$HOME/.conduit-user"
+    log_info "Switching to a user-writable install directory: $fallback_dir"
+    INSTALL_DIR="$fallback_dir"
+    BACKUP_DIR="$INSTALL_DIR/backups"
+
+    mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+    if [ ! -w "$INSTALL_DIR" ]; then
+        log_error "Install directory is still not writable: $INSTALL_DIR"
+        log_info "Please fix permissions or choose a different INSTALL_DIR."
+        log_info "Example (fix old dir ownership):"
+        log_info "  sudo chown -R \"$(id -u):$(id -g)\" \"$HOME/.conduit\""
+        exit 1
+    fi
+}
+
 install_package() {
     local package="$1"
     log_info "Installing $package..."
     
     case "$PKG_MANAGER" in
+        brew)
+            if [ "$EUID" -eq 0 ]; then
+                log_error "Homebrew cannot be run as root on macOS."
+                log_info "Please rerun without sudo."
+                return 1
+            fi
+            if ! command -v brew &>/dev/null; then
+                log_error "Homebrew is required on macOS to install dependencies."
+                log_info "Install Homebrew from: https://brew.sh/"
+                return 1
+            fi
+            if brew install "$package"; then
+                log_success "$package installed successfully"
+            else
+                log_error "Failed to install $package via Homebrew"
+                return 1
+            fi
+            ;;
         apt)
             # Make update failure non-fatal but log it
             apt-get update -q || log_warn "apt-get update failed, attempting to install regardless..."
@@ -229,6 +311,20 @@ check_dependencies() {
     if ! command -v curl &>/dev/null; then
         install_package curl || log_warn "Could not install curl automatically"
     fi
+
+    # macOS: ensure modern bash (system bash is 3.2 without associative arrays)
+    if [ "$OS_FAMILY" = "macos" ]; then
+        local bash_path
+        bash_path=$(command -v bash || true)
+        local bash_major=0
+        if [ -n "$bash_path" ]; then
+            bash_major=$(bash -c 'ver=${BASH_VERSINFO[0]:-0}; echo "${ver:-0}"' 2>/dev/null || echo 0)
+        fi
+        if [ "$bash_major" -lt 4 ]; then
+            log_info "Installing modern bash via Homebrew (required for associative arrays)..."
+            install_package bash || log_warn "Could not install modern bash; macOS peers view may fail"
+        fi
+    fi
     
     # Check for basic tools
     if ! command -v awk &>/dev/null; then
@@ -239,8 +335,8 @@ check_dependencies() {
         esac
     fi
     
-    # Check for free command
-    if ! command -v free &>/dev/null; then
+    # Check for free command (Linux). On macOS we use other methods for RAM stats.
+    if [ "$OS_FAMILY" != "macos" ] && ! command -v free &>/dev/null; then
         case "$PKG_MANAGER" in
             apt|dnf|yum) install_package procps || log_warn "Could not install procps" ;;
             pacman) install_package procps-ng || log_warn "Could not install procps" ;;
@@ -266,6 +362,19 @@ check_dependencies() {
     # Check for GeoIP tools
     if ! command -v geoiplookup &>/dev/null; then
         case "$PKG_MANAGER" in
+            brew)
+                # macOS: implement GeoIP via MaxMind MMDB + mmdblookup (libmaxminddb)
+                if ! command -v mmdblookup &>/dev/null; then
+                    install_package libmaxminddb || {
+                        log_error "GeoIP lookup is required for peers-by-country on macOS."
+                        log_error "Failed to install libmaxminddb (mmdblookup)."
+                        exit 1
+                    }
+                fi
+
+                # Ensure GeoLite2 Country DB is present (hard requirement on macOS)
+                ensure_geoip_db_macos
+                ;;
             apt) 
                 # geoip-bin and geoip-database for newer systems
                 install_package geoip-bin || log_warn "Could not install geoip-bin"
@@ -287,9 +396,98 @@ check_dependencies() {
     fi
 }
 
+ensure_geoip_db_macos() {
+    # Ensure MaxMind GeoLite2 Country DB exists for mmdblookup.
+    # Requires a (free) MaxMind license key for download.
+    if [ "$OS_FAMILY" != "macos" ]; then
+        return 0
+    fi
+
+    local geoip_dir="$INSTALL_DIR/geoip"
+    local mmdb_path="$geoip_dir/GeoLite2-Country.mmdb"
+    mkdir -p "$geoip_dir"
+
+    if [ -f "$mmdb_path" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}                 GEOIP DATABASE REQUIRED (macOS)                ${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "To show peers by country on macOS, we need the MaxMind GeoLite2 Country database."
+    echo "MaxMind requires a free account + license key to download it."
+    echo ""
+    echo -e "  Create account: ${YELLOW}https://www.maxmind.com/en/geolite2/signup${NC}"
+    echo -e "  Create license key: ${YELLOW}https://www.maxmind.com/en/accounts/current/license-key${NC}"
+    echo ""
+    # Hide input for license key (portable)
+    printf "Enter your MaxMind license key (required, hidden input): "
+    if read -s maxmind_key < /dev/tty 2>/dev/null; then
+        echo ""
+    else
+        # Fallback if -s not supported
+        stty -echo 2>/dev/null || true
+        read maxmind_key < /dev/tty || true
+        stty echo 2>/dev/null || true
+        echo ""
+    fi
+
+    if [ -z "$maxmind_key" ]; then
+        echo ""
+        log_error "MaxMind license key is required to enable peers-by-country on macOS."
+        log_info "Re-run the script and provide a license key when prompted."
+        exit 1
+    fi
+
+    log_info "Downloading GeoLite2 Country database..."
+    local tmpdir
+    tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t conduit_geoip)"
+    local url="https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${maxmind_key}&suffix=tar.gz"
+
+    if ! curl -fsSL "$url" -o "$tmpdir/geolite2.tar.gz"; then
+        log_error "Failed to download GeoLite2 database from MaxMind."
+        log_info "Check your license key and try again."
+        rm -rf "$tmpdir" 2>/dev/null || true
+        exit 1
+    fi
+
+    if ! tar -xzf "$tmpdir/geolite2.tar.gz" -C "$tmpdir" 2>/dev/null; then
+        log_error "Failed to extract GeoLite2 database archive."
+        rm -rf "$tmpdir" 2>/dev/null || true
+        exit 1
+    fi
+
+    local found_mmdb
+    found_mmdb="$(find "$tmpdir" -type f -name "GeoLite2-Country.mmdb" 2>/dev/null | head -1)"
+    if [ -z "$found_mmdb" ] || [ ! -f "$found_mmdb" ]; then
+        log_error "GeoLite2-Country.mmdb not found in downloaded archive."
+        rm -rf "$tmpdir" 2>/dev/null || true
+        exit 1
+    fi
+
+    if ! cp "$found_mmdb" "$mmdb_path"; then
+        log_error "Failed to install GeoIP database to: $mmdb_path"
+        rm -rf "$tmpdir" 2>/dev/null || true
+        exit 1
+    fi
+
+    rm -rf "$tmpdir" 2>/dev/null || true
+    log_success "GeoIP database installed: $mmdb_path"
+}
+
 get_ram_mb() {
     # Get RAM in MB
     local ram=""
+
+    # macOS
+    if [ "$OS_FAMILY" = "macos" ]; then
+        local bytes=$(sysctl -n hw.memsize 2>/dev/null || echo "")
+        if [[ "$bytes" =~ ^[0-9]+$ ]] && [ "$bytes" -gt 0 ] 2>/dev/null; then
+            ram=$((bytes / 1024 / 1024))
+        fi
+    fi
     
     # Try free command first
     if command -v free &>/dev/null; then
@@ -316,7 +514,9 @@ get_ram_mb() {
 
 get_cpu_cores() {
     local cores=1
-    if command -v nproc &>/dev/null; then
+    if [ "$OS_FAMILY" = "macos" ]; then
+        cores=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+    elif command -v nproc &>/dev/null; then
         cores=$(nproc)
     elif [ -f /proc/cpuinfo ]; then
         cores=$(grep -c ^processor /proc/cpuinfo)
@@ -453,6 +653,31 @@ install_docker() {
     fi
     
     log_info "Installing Docker..."
+
+    # macOS (Apple Silicon): prefer Docker Desktop
+    if [ "$OS_FAMILY" = "macos" ]; then
+        echo ""
+        log_warn "macOS detected. Docker Engine runs via Docker Desktop on macOS."
+        echo -e "${YELLOW}Note:${NC} This script supports Apple Silicon (arm64) Macs."
+        echo ""
+
+        if ! command -v brew &>/dev/null; then
+            log_error "Homebrew not found. Please install Docker Desktop manually."
+            log_info "Install Homebrew: https://brew.sh/"
+            log_info "Or install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+            return 1
+        fi
+
+        log_info "Installing Docker Desktop (Homebrew cask)..."
+        if brew install --cask docker; then
+            log_success "Docker Desktop installed"
+            return 0
+        else
+            log_error "Failed to install Docker Desktop via Homebrew."
+            log_info "Please install it manually: https://www.docker.com/products/docker-desktop/"
+            return 1
+        fi
+    fi
     
     # Check OS family for specific requirements
     if [ "$OS_FAMILY" = "rhel" ]; then
@@ -525,7 +750,12 @@ ensure_docker_running() {
     log_warn "Docker is installed but the Docker Engine (daemon) is not running."
     echo ""
     echo -e "${CYAN}Docker is required to continue.${NC}"
-    echo -e "This script can try to start the Docker service for you."
+    if [ "$OS_FAMILY" = "macos" ]; then
+        echo -e "Docker Desktop needs to be running."
+        echo -e "This script can try to open Docker Desktop for you."
+    else
+        echo -e "This script can try to start the Docker service for you."
+    fi
     echo ""
     read -p "Start Docker Engine now? [y/N] " start_docker_confirm < /dev/tty || true
 
@@ -533,16 +763,23 @@ ensure_docker_running() {
         echo ""
         log_error "Docker Engine is not running. Cannot continue without Docker."
         log_info "Start it manually, then rerun this script."
-        log_info "  systemd:   sudo systemctl start docker"
-        log_info "  SysVinit:  sudo service docker start   (or /etc/init.d/docker start)"
-        log_info "  OpenRC:    sudo rc-service docker start"
+        if [ "$OS_FAMILY" = "macos" ]; then
+            log_info "  Open Docker Desktop (Applications → Docker)"
+        else
+            log_info "  systemd:   sudo systemctl start docker"
+            log_info "  SysVinit:  sudo service docker start   (or /etc/init.d/docker start)"
+            log_info "  OpenRC:    sudo rc-service docker start"
+        fi
         exit 1
     fi
 
     echo ""
     log_info "Starting Docker..."
 
-    if [ "$HAS_SYSTEMD" = "true" ]; then
+    if [ "$OS_FAMILY" = "macos" ]; then
+        # Docker Desktop (macOS)
+        open -a Docker 2>/dev/null || true
+    elif [ "$HAS_SYSTEMD" = "true" ]; then
         systemctl start docker 2>/dev/null || true
     else
         # OpenRC / SysVinit fallbacks
@@ -552,7 +789,7 @@ ensure_docker_running() {
     fi
 
     # Wait briefly for daemon readiness
-    local retries=10
+    local retries=60
     while ! docker info &>/dev/null && [ $retries -gt 0 ]; do
         sleep 1
         retries=$((retries - 1))
@@ -679,11 +916,21 @@ run_conduit() {
         sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
 
     # Start the Conduit container
+    local net_args=""
+    if [ "$OS_FAMILY" = "macos" ]; then
+        # Docker Desktop does not support --network host; publish ports explicitly.
+        # Conduit typically listens on 443; we publish both TCP and UDP.
+        net_args="-p 443:443/tcp -p 443:443/udp"
+        log_warn "macOS detected: using port publishing instead of host networking (443/tcp+udp)."
+    else
+        net_args="--network host"
+    fi
+
     docker run -d \
         --name conduit \
         --restart unless-stopped \
         -v conduit-data:/home/conduit/data \
-        --network host \
+        $net_args \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
 
@@ -724,6 +971,12 @@ EOF
 
 setup_autostart() {
     log_info "Setting up auto-start on boot..."
+
+    if [ "$OS_FAMILY" = "macos" ]; then
+        log_warn "Auto-start is not configured on macOS by this script (launchd support not yet implemented)."
+        log_info "Tip: Configure Docker Desktop to start at login, then run: conduit start"
+        return 0
+    fi
     
     if [ "$HAS_SYSTEMD" = "true" ]; then
         # Systemd-based systems
@@ -837,7 +1090,26 @@ create_management_script() {
 VERSION="1.0.2"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
+GEOIP_DIR="$INSTALL_DIR/geoip"
+GEOIP_MMDB="$GEOIP_DIR/GeoLite2-Country.mmdb"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
+
+# On macOS, prefer Homebrew bash (supports associative arrays). Re-exec if needed.
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    if command -v /opt/homebrew/bin/bash >/dev/null 2>&1; then
+        if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+            exec /opt/homebrew/bin/bash "$0" "$@"
+        fi
+    elif command -v /usr/local/bin/bash >/dev/null 2>&1; then
+        if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+            exec /usr/local/bin/bash "$0" "$@"
+        fi
+    fi
+    # If still on old bash (<4), warn; associative arrays may fail
+    if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+        echo "Warning: macOS system bash is too old (<4). Install Homebrew bash: brew install bash"
+    fi
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -847,15 +1119,42 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Ensure we have bash 4+ (macOS system bash is 3.x)
+ensure_bash_v4() {
+    if [ -n "${BASH_VERSINFO[0]:-}" ] && [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+        return 0
+    fi
+
+    local brew_prefix=""
+    command -v brew &>/dev/null && brew_prefix="$(brew --prefix 2>/dev/null || true)"
+    local brew_bash="${brew_prefix:+$brew_prefix/bin/bash}"
+    [ -z "$brew_bash" ] && brew_bash="/opt/homebrew/bin/bash"
+
+    if [ -x "$brew_bash" ]; then
+        echo "Re-executing with newer bash: $brew_bash"
+        exec "$brew_bash" "$0" "$@"
+    fi
+
+    echo -e "${RED}Error: This script requires bash 4 or newer.${NC}"
+    echo "macOS system bash is too old (3.x). Install a newer bash:"
+    echo "  brew install bash"
+    echo "Then rerun: $0"
+    exit 1
+}
+
+ensure_bash_v4 "$@"
+
 # Load settings
 [ -f "$INSTALL_DIR/settings.conf" ] && source "$INSTALL_DIR/settings.conf"
 MAX_CLIENTS=${MAX_CLIENTS:-200}
 BANDWIDTH=${BANDWIDTH:-5}
 
-# Ensure we're running as root
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Error: This command must be run as root (use sudo conduit)${NC}"
-    exit 1
+# On macOS, Docker works without root. Some features (like tcpdump) may still require sudo.
+if [ "$(uname -s 2>/dev/null)" != "Darwin" ]; then
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error: This command must be run as root (use sudo conduit)${NC}"
+        exit 1
+    fi
 fi
 
 # Check if Docker is available
@@ -890,6 +1189,134 @@ if ! command -v awk &>/dev/null; then
     echo -e "${YELLOW}Warning: awk not found. Some stats may not display correctly.${NC}"
 fi
 
+# GeoIP helpers (macOS uses mmdblookup + GeoLite2 database)
+resolve_geoip_db() {
+    local path="$GEOIP_MMDB"
+    if [ -f "$path" ]; then
+        echo "$path"
+        return
+    fi
+
+    # If running under sudo on macOS, also check the invoking user's install dir
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ -n "${SUDO_USER:-}" ]; then
+        local user_home=""
+        user_home=$(eval echo "~${SUDO_USER}" 2>/dev/null || true)
+        if [ -n "$user_home" ]; then
+            local alt1="$user_home/.conduit/geoip/GeoLite2-Country.mmdb"
+            local alt2="$user_home/.conduit-user/geoip/GeoLite2-Country.mmdb"
+            [ -f "$alt1" ] && { echo "$alt1"; return; }
+            [ -f "$alt2" ] && { echo "$alt2"; return; }
+        fi
+    fi
+
+    echo ""
+}
+
+find_mmdblookup() {
+    # Try PATH first
+    if command -v mmdblookup >/dev/null 2>&1; then
+        command -v mmdblookup
+        return
+    fi
+    # Common Homebrew locations (sudo may not inherit PATH)
+    if [ -x "/opt/homebrew/bin/mmdblookup" ]; then
+        echo "/opt/homebrew/bin/mmdblookup"
+        return
+    fi
+    if [ -x "/usr/local/bin/mmdblookup" ]; then
+        echo "/usr/local/bin/mmdblookup"
+        return
+    fi
+    echo ""
+}
+
+geoip_lookup_country() {
+    local ip="$1"
+    if [ -z "$ip" ]; then
+        echo "Unknown"
+        return
+    fi
+
+    if command -v geoiplookup &>/dev/null; then
+        # Linux: geoiplookup output example: "GeoIP Country Edition: US, United States"
+        geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ //'
+        return
+    fi
+
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+        local mmdb_bin
+        mmdb_bin="$(find_mmdblookup)"
+        if [ -z "$mmdb_bin" ]; then
+            echo "Unknown"
+            return
+        fi
+        local mmdb_path
+        mmdb_path="$(resolve_geoip_db)"
+        if [ -z "$mmdb_path" ] || [ ! -f "$mmdb_path" ]; then
+            echo "Unknown"
+            return
+        fi
+        # Extract country (prefer English name; fallback to ISO code).
+        # mmdblookup output format varies; use grep-based parsing for robustness.
+        local name_line name
+        name_line=$("$mmdb_bin" --file "$mmdb_path" --ip "$ip" country names en 2>/dev/null | tr -d '\r')
+        name=$(echo "$name_line" | grep -Eo '"[^"]+"' | tail -1 | tr -d '"')
+        if [ -n "$name" ]; then
+            echo "$name"
+            return
+        fi
+
+        local iso_line iso
+        iso_line=$("$mmdb_bin" --file "$mmdb_path" --ip "$ip" country iso_code 2>/dev/null | tr -d '\r')
+        iso=$(echo "$iso_line" | grep -Eo '"[A-Z]{2}"' | head -1 | tr -d '"')
+        if [ -n "$iso" ]; then
+            echo "$iso"
+            return
+        fi
+        echo "Unknown"
+        return
+    fi
+
+    echo "Unknown"
+}
+
+geoip_diag() {
+    # Lightweight diagnostic to help troubleshoot "Unknown" countries on macOS.
+    local mmdb_bin mmdb_path sample result
+    mmdb_bin="$(find_mmdblookup)"
+    mmdb_path="$(resolve_geoip_db)"
+
+    echo "GeoIP diagnostic:"
+    echo "  mmdblookup: ${mmdb_bin:-not found}"
+    echo "  mmdb path : ${mmdb_path:-not found}"
+
+    sample="8.8.8.8"
+    if [ -n "$mmdb_bin" ] && [ -n "$mmdb_path" ] && [ -f "$mmdb_path" ]; then
+        result=$("$mmdb_bin" --file "$mmdb_path" --ip "$sample" country names en 2>/dev/null | awk -F'"' '/"en"/{print $4; exit}')
+        if [ -z "$result" ]; then
+            result=$("$mmdb_bin" --file "$mmdb_path" --ip "$sample" country iso_code 2>/dev/null | awk -F'"' '/\"iso_code\"/{getline; if ($0 ~ /\"[A-Z]{2}\"/) {gsub(/"/,""); print $1; exit}}')
+        fi
+        echo "  sample ${sample}: ${result:-Unknown}"
+    else
+        echo "  sample lookup: unavailable"
+    fi
+    echo ""
+}
+
+run_with_timeout() {
+    # Usage: run_with_timeout <seconds> <command...>
+    local seconds="$1"
+    shift
+    if command -v timeout &>/dev/null; then
+        timeout "$seconds" "$@"
+    elif command -v gtimeout &>/dev/null; then
+        gtimeout "$seconds" "$@"
+    else
+        # Portable fallback using perl alarm
+        perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+    fi
+}
+
 # Helper: Fix volume permissions for conduit user (uid 1000)
 fix_volume_permissions() {
     docker run --rm -v conduit-data:/home/conduit/data alpine \
@@ -898,11 +1325,16 @@ fix_volume_permissions() {
 
 # Helper: Start/recreate conduit container with current settings
 run_conduit_container() {
+    local net_args="--network host"
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+        # Docker Desktop does not support host networking; publish ports explicitly.
+        net_args="-p 443:443/tcp -p 443:443/udp"
+    fi
     docker run -d \
         --name conduit \
         --restart unless-stopped \
         -v conduit-data:/home/conduit/data \
-        --network host \
+        $net_args \
         $CONDUIT_IMAGE \
         start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
 }
@@ -1127,23 +1559,67 @@ show_peers() {
     local stop_peers=0
     trap 'stop_peers=1' SIGINT SIGTERM
 
+    local is_darwin=0
+    [ "$(uname -s 2>/dev/null)" = "Darwin" ] && is_darwin=1
+
     # Verify required dependencies are installed
-    if ! command -v tcpdump &>/dev/null || ! command -v geoiplookup &>/dev/null; then
-        echo -e "${RED}Error: tcpdump or geoiplookup not found!${NC}"
-        echo "Please re-run the main installer to fix dependencies."
+    # macOS requires sudo for tcpdump; enforce it for this feature.
+    if [ $is_darwin -eq 1 ] && [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error: Viewing peers by country requires elevated privileges on macOS (tcpdump).${NC}"
+        echo "Run:"
+        echo "  sudo conduit peers"
         read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
         return 1
     fi
 
+    if ! command -v tcpdump &>/dev/null; then
+        echo -e "${RED}Error: tcpdump not found!${NC}"
+        read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+        return 1
+    fi
+
+    # GeoIP backend: require either geoiplookup (Linux) or mmdblookup+DB (macOS)
+    if ! command -v geoiplookup &>/dev/null; then
+        if [ $is_darwin -eq 1 ]; then
+            local mmdb_bin mmdb_path
+            mmdb_bin="$(find_mmdblookup)"
+            mmdb_path="$(resolve_geoip_db)"
+            if [ -z "$mmdb_bin" ] || [ -z "$mmdb_path" ] || [ ! -f "$mmdb_path" ]; then
+                echo -e "${RED}Error: GeoIP database not configured.${NC}"
+                echo "Re-run the installer to set up GeoLite2 database, then try again."
+                echo ""
+                geoip_diag
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                return 1
+            fi
+        else
+            echo -e "${RED}Error: geoiplookup not found!${NC}"
+            echo "Please re-run the main installer to fix dependencies."
+            read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+            return 1
+        fi
+    fi
+
     # Network interface detection
-    # Use "any" to capture on all interfaces
     local iface="any"
 
     # Detect local IP address to determine traffic direction
-    # Method 1: Query the route to a public IP (most reliable)
-    # Method 2: Fallback to hostname -I
-    local local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
-    [ -z "$local_ip" ] && local_ip=$(hostname -I | awk '{print $1}')
+    local local_ip=""
+    if [ $is_darwin -eq 1 ]; then
+        iface="$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}')"
+        [ -z "$iface" ] && iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+        [ -z "$iface" ] && iface="en0"
+        local_ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    else
+        # Linux
+        local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}')
+        [ -z "$local_ip" ] && local_ip=$(hostname -I | awk '{print $1}')
+    fi
+
+    # On macOS, print GeoIP diagnostic once up-front
+    if [ $is_darwin -eq 1 ]; then
+        geoip_diag
+    fi
 
     # Clean temporary working files (per-cycle data only)
     rm -f /tmp/conduit_peers_current /tmp/conduit_peers_raw
@@ -1151,7 +1627,7 @@ show_peers() {
     touch /tmp/conduit_traffic_from /tmp/conduit_traffic_to
 
     # Persistent data directory - survives across option 9 sessions
-    local persist_dir="/opt/conduit/traffic_stats"
+    local persist_dir="$INSTALL_DIR/traffic_stats"
     mkdir -p "$persist_dir"
 
     # Get container start time to detect restarts
@@ -1181,6 +1657,11 @@ show_peers() {
     tput smcup 2>/dev/null || true
     # Hide cursor for cleaner display
     echo -ne "\033[?25l"
+
+    # On macOS, show one-time GeoIP diagnostics to help resolve "Unknown"
+    if [ $is_darwin -eq 1 ]; then
+        geoip_diag
+    fi
 
     #═══════════════════════════════════════════════════════════════════
     # Main display loop - runs until user presses a key
@@ -1315,7 +1796,7 @@ show_peers() {
         # Wrap pipeline in subshell so $! captures the whole pipeline PID, not just awk
         # This ensures the progress indicator runs for the full 15-second capture
         (
-            timeout 15 tcpdump -ni $iface -q '(tcp or udp)' 2>/dev/null | \
+            run_with_timeout 15 tcpdump -ni $iface -q '(tcp or udp)' 2>/dev/null | \
             awk -v local_ip="$local_ip" '
             # Portable awk script - works with mawk, gawk, and busybox awk
             /IP/ {
@@ -1475,7 +1956,7 @@ show_peers() {
                 [ -z "$ip" ] && continue
 
                 # Resolve IP to country using GeoIP database
-                local country_info=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ //')
+                local country_info=$(geoip_lookup_country "$ip")
                 [ -z "$country_info" ] && country_info="Unknown"
 
                 # Normalize certain country names for display
@@ -2494,14 +2975,41 @@ esac
 MANAGEMENT
 
     # Patch the INSTALL_DIR in the generated script
-    sed -i "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    # Use portable in-place sed (GNU sed vs BSD/macOS sed)
+    if sed --version >/dev/null 2>&1; then
+        # GNU sed (Linux)
+        sed -i "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    else
+        # BSD sed (macOS)
+        sed -i '' "s#REPLACE_ME_INSTALL_DIR#$INSTALL_DIR#g" "$INSTALL_DIR/conduit"
+    fi
     
     chmod +x "$INSTALL_DIR/conduit"
     # Force create symlink
-    rm -f /usr/local/bin/conduit 2>/dev/null || true
-    ln -s "$INSTALL_DIR/conduit" /usr/local/bin/conduit
-    
-    log_success "Management script installed: conduit"
+    if [ "$OS_FAMILY" = "macos" ]; then
+        # Prefer Homebrew prefix on Apple Silicon; fall back to /usr/local for Intel/brew variants.
+        local brew_prefix=""
+        command -v brew &>/dev/null && brew_prefix="$(brew --prefix 2>/dev/null || true)"
+        local link_dir="${brew_prefix:-/usr/local}/bin"
+        local link_path="$link_dir/conduit"
+
+        if [ -n "$link_dir" ] && [ -d "$link_dir" ] && [ -w "$link_dir" ]; then
+            rm -f "$link_path" 2>/dev/null || true
+            ln -s "$INSTALL_DIR/conduit" "$link_path"
+            log_success "Management script installed: conduit"
+            log_info "Run it with: conduit"
+        else
+            log_warn "Could not install a global 'conduit' command (no write access to ${link_dir})."
+            log_info "You can run it directly:"
+            log_info "  $INSTALL_DIR/conduit"
+            log_info "Or install the symlink yourself:"
+            log_info "  sudo ln -sf \"$INSTALL_DIR/conduit\" \"${link_path}\""
+        fi
+    else
+        rm -f /usr/local/bin/conduit 2>/dev/null || true
+        ln -s "$INSTALL_DIR/conduit" /usr/local/bin/conduit
+        log_success "Management script installed: conduit"
+    fi
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -2660,8 +3168,9 @@ main() {
     esac
     
     print_header
-    check_root
     detect_os
+    check_root
+    ensure_install_dir_writable
     
     # Ensure all tools (including new ones like tcpdump) are present
     check_dependencies
