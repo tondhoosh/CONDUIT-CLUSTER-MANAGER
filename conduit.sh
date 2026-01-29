@@ -392,7 +392,7 @@ prompt_settings() {
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
     read -p "  Set unlimited bandwidth? [y/N] " unlimited_bw < /dev/tty || true
 
-    if [[ "$unlimited_bw" =~ ^[Yy] ]]; then
+    if [[ "$unlimited_bw" =~ ^[Yy]$ ]]; then
         BANDWIDTH="-1"
         echo -e "  Selected: ${GREEN}Unlimited (-1)${NC}"
     else
@@ -474,7 +474,7 @@ prompt_settings() {
     echo ""
 
     read -p "  Proceed with these settings? [Y/n] " confirm < /dev/tty || true
-    if [[ "$confirm" =~ ^[Nn] ]]; then
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
         continue
     fi
     break
@@ -578,46 +578,50 @@ check_and_offer_backup_restore() {
     echo -e "  ${YELLOW}Note:${NC} If you don't restore, a new identity will be generated."
     echo ""
 
-    read -p "  Do you want to restore your previous node identity? (y/n): " restore_choice < /dev/tty || true
+    while true; do
+        read -p "  Do you want to restore your previous node identity? (y/n): " restore_choice < /dev/tty || true
 
-    if [ "$restore_choice" = "y" ] || [ "$restore_choice" = "Y" ]; then
-        echo ""
-        log_info "Restoring node identity from backup..."
-
-        docker volume create conduit-data 2>/dev/null || true
-
-        # Try bind-mount, fall back to docker cp (Snap Docker compatibility)
-        local restore_ok=false
-        if docker run --rm -v conduit-data:/home/conduit/data -v "$BACKUP_DIR":/backup alpine \
-            sh -c "cp /backup/$backup_filename /home/conduit/data/conduit_key.json && chown -R 1000:1000 /home/conduit/data" 2>/dev/null; then
-            restore_ok=true
-        else
-            log_info "Bind-mount failed (Snap Docker?), trying docker cp..."
-            local tmp_ctr="conduit-restore-tmp"
-            docker create --name "$tmp_ctr" -v conduit-data:/home/conduit/data alpine true 2>/dev/null || true
-            if docker cp "$latest_backup" "$tmp_ctr:/home/conduit/data/conduit_key.json" 2>/dev/null; then
-                docker run --rm -v conduit-data:/home/conduit/data alpine \
-                    chown -R 1000:1000 /home/conduit/data 2>/dev/null || true
-                restore_ok=true
-            fi
-            docker rm -f "$tmp_ctr" 2>/dev/null || true
-        fi
-
-        if [ "$restore_ok" = "true" ]; then
-            log_success "Node identity restored successfully!"
+        if [[ "$restore_choice" =~ ^[Yy]$ ]]; then
             echo ""
-            return 0
-        else
-            log_error "Failed to restore backup. Proceeding with fresh install."
+            log_info "Restoring node identity from backup..."
+
+            docker volume create conduit-data 2>/dev/null || true
+
+            # Try bind-mount, fall back to docker cp (Snap Docker compatibility)
+            local restore_ok=false
+            if docker run --rm -v conduit-data:/home/conduit/data -v "$BACKUP_DIR":/backup alpine \
+                sh -c "cp /backup/$backup_filename /home/conduit/data/conduit_key.json && chown -R 1000:1000 /home/conduit/data" 2>/dev/null; then
+                restore_ok=true
+            else
+                log_info "Bind-mount failed (Snap Docker?), trying docker cp..."
+                local tmp_ctr="conduit-restore-tmp"
+                docker create --name "$tmp_ctr" -v conduit-data:/home/conduit/data alpine true 2>/dev/null || true
+                if docker cp "$latest_backup" "$tmp_ctr:/home/conduit/data/conduit_key.json" 2>/dev/null; then
+                    docker run --rm -v conduit-data:/home/conduit/data alpine \
+                        chown -R 1000:1000 /home/conduit/data 2>/dev/null || true
+                    restore_ok=true
+                fi
+                docker rm -f "$tmp_ctr" 2>/dev/null || true
+            fi
+
+            if [ "$restore_ok" = "true" ]; then
+                log_success "Node identity restored successfully!"
+                echo ""
+                return 0
+            else
+                log_error "Failed to restore backup. Proceeding with fresh install."
+                echo ""
+                return 1
+            fi
+        elif [[ "$restore_choice" =~ ^[Nn]$ ]]; then
+            echo ""
+            log_info "Skipping restore. A new node identity will be generated."
             echo ""
             return 1
+        else
+            echo "  Please enter y or n."
         fi
-    else
-        echo ""
-        log_info "Skipping restore. A new node identity will be generated."
-        echo ""
-        return 1
-    fi
+    done
 }
 
 run_conduit() {
@@ -2619,7 +2623,7 @@ change_settings() {
     read -p "  Set unlimited bandwidth? [y/N]: " set_unlimited < /dev/tty || true
 
     local new_bandwidth=""
-    if [[ "$set_unlimited" =~ ^[Yy] ]]; then
+    if [[ "$set_unlimited" =~ ^[Yy]$ ]]; then
         new_bandwidth="-1"
     else
         read -p "  New bandwidth in Mbps (1-40) [${cur_bw}]: " input_bw < /dev/tty || true
@@ -2776,14 +2780,19 @@ uninstall_all() {
         echo "You have backed up node identity keys. These allow you to restore"
         echo "your node identity if you reinstall Conduit later."
         echo ""
-        read -p "Do you want to KEEP your backup keys? (y/n): " keep_confirm < /dev/tty || true
-
-        if [ "$keep_confirm" = "y" ] || [ "$keep_confirm" = "Y" ]; then
-            keep_backups=true
-            echo -e "${GREEN}✓ Backup keys will be preserved.${NC}"
-        else
-            echo -e "${YELLOW}⚠ Backup keys will be deleted.${NC}"
-        fi
+        while true; do
+            read -p "Do you want to KEEP your backup keys? (y/n): " keep_confirm < /dev/tty || true
+            if [[ "$keep_confirm" =~ ^[Yy]$ ]]; then
+                keep_backups=true
+                echo -e "${GREEN}✓ Backup keys will be preserved.${NC}"
+                break
+            elif [[ "$keep_confirm" =~ ^[Nn]$ ]]; then
+                echo -e "${YELLOW}⚠ Backup keys will be deleted.${NC}"
+                break
+            else
+                echo "Please enter y or n."
+            fi
+        done
         echo ""
     fi
 
@@ -3346,7 +3355,7 @@ show_settings_menu() {
 
         read -p "  Enter choice: " choice < /dev/tty || { return; }
 
-        case $choice in
+        case "$choice" in
             1)
                 change_settings
                 redraw=true
@@ -3386,20 +3395,26 @@ show_settings_menu() {
                 ;;
             9)
                 echo ""
-                read -p "Reset tracker and delete all stats data? (y/n): " confirm < /dev/tty || true
-                if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    echo "Stopping tracker service..."
-                    stop_tracker_service 2>/dev/null || true
-                    echo "Deleting tracker data..."
-                    rm -rf /opt/conduit/traffic_stats 2>/dev/null || true
-                    rm -f /opt/conduit/conduit-tracker.sh 2>/dev/null || true
-                    echo "Restarting tracker service..."
-                    regenerate_tracker_script
-                    setup_tracker_service
-                    echo -e "${GREEN}Tracker data has been reset.${NC}"
-                else
-                    echo "Cancelled."
-                fi
+                while true; do
+                    read -p "Reset tracker and delete all stats data? (y/n): " confirm < /dev/tty || true
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        echo "Stopping tracker service..."
+                        stop_tracker_service 2>/dev/null || true
+                        echo "Deleting tracker data..."
+                        rm -rf /opt/conduit/traffic_stats 2>/dev/null || true
+                        rm -f /opt/conduit/conduit-tracker.sh 2>/dev/null || true
+                        echo "Restarting tracker service..."
+                        regenerate_tracker_script
+                        setup_tracker_service
+                        echo -e "${GREEN}Tracker data has been reset.${NC}"
+                        break
+                    elif [[ "$confirm" =~ ^[Nn]$ ]]; then
+                        echo "Cancelled."
+                        break
+                    else
+                        echo "Please enter y or n."
+                    fi
+                done
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
@@ -3468,7 +3483,7 @@ show_menu() {
 
         read -p "  Enter choice: " choice < /dev/tty || { echo "Input error. Exiting."; exit 1; }
 
-        case $choice in
+        case "$choice" in
             1)
                 show_dashboard
                 redraw=true
@@ -3806,26 +3821,31 @@ health_check() {
 
         # Single docker logs call for network + stats checks
         local hc_logs=$(docker logs --tail 100 "$cname" 2>&1)
-        local hc_stats_lines=$(echo "$hc_logs" | grep "\[STATS\]")
-        local hc_stats_count=$(echo "$hc_stats_lines" | grep -c "\[STATS\]" 2>/dev/null || echo 0)
+        local hc_stats_lines=$(echo "$hc_logs" | grep "\[STATS\]" || true)
+        local hc_stats_count=0
+        if [ -n "$hc_stats_lines" ]; then
+            hc_stats_count=$(echo "$hc_stats_lines" | wc -l | tr -d ' ')
+        fi
+        hc_stats_count=${hc_stats_count:-0}
         local hc_last_stat=$(echo "$hc_stats_lines" | tail -1)
-        local hc_connected=$(echo "$hc_last_stat" | sed -n 's/.*Connected:[[:space:]]*\([0-9]*\).*/\1/p')
+        local hc_connected=$(echo "$hc_last_stat" | sed -n 's/.*Connected:[[:space:]]*\([0-9]*\).*/\1/p' | head -1 | tr -d '\n')
         hc_connected=${hc_connected:-0}
-        local hc_connecting=$(echo "$hc_last_stat" | sed -n 's/.*Connecting:[[:space:]]*\([0-9]*\).*/\1/p')
+        local hc_connecting=$(echo "$hc_last_stat" | sed -n 's/.*Connecting:[[:space:]]*\([0-9]*\).*/\1/p' | head -1 | tr -d '\n')
         hc_connecting=${hc_connecting:-0}
 
         echo -n "Network connection:   "
-        if [ "$hc_connected" -gt 0 ]; then
+        if [ "$hc_connected" -gt 0 ] 2>/dev/null; then
             echo -e "${GREEN}OK${NC} (${hc_connected} peers connected, ${hc_connecting} connecting)"
-        elif [ "$hc_stats_count" -gt 0 ]; then
-            if [ "$hc_connecting" -gt 0 ]; then
+        elif [ "$hc_stats_count" -gt 0 ] 2>/dev/null; then
+            if [ "$hc_connecting" -gt 0 ] 2>/dev/null; then
                 echo -e "${GREEN}OK${NC} (Connected, ${hc_connecting} peers connecting)"
             else
                 echo -e "${GREEN}OK${NC} (Connected, awaiting peers)"
             fi
         else
             local info_lines=$(echo "$hc_logs" | grep -c "\[INFO\]" 2>/dev/null || echo 0)
-            if [ "$info_lines" -gt 0 ]; then
+            info_lines=${info_lines:-0}
+            if [ "$info_lines" -gt 0 ] 2>/dev/null; then
                 echo -e "${YELLOW}CONNECTING${NC} - Establishing connection..."
             else
                 echo -e "${YELLOW}WAITING${NC} - Starting up..."
@@ -3833,7 +3853,7 @@ health_check() {
         fi
 
         echo -n "Stats output:         "
-        if [ "$hc_stats_count" -gt 0 ]; then
+        if [ "$hc_stats_count" -gt 0 ] 2>/dev/null; then
             echo -e "${GREEN}OK${NC} (${hc_stats_count} entries)"
         else
             echo -e "${YELLOW}NONE${NC} - Run 'conduit restart' to enable"
@@ -3931,8 +3951,8 @@ backup_key() {
 
     echo -e "${GREEN}✓ Backup created successfully${NC}"
     echo ""
-    echo "  Backup file: ${CYAN}${backup_file}${NC}"
-    echo "  Node ID:     ${CYAN}${node_id}${NC}"
+    echo -e "  Backup file: ${CYAN}${backup_file}${NC}"
+    echo -e "  Node ID:     ${CYAN}${node_id}${NC}"
     echo ""
     echo -e "${YELLOW}Important:${NC} Store this backup securely. It contains your node's"
     echo "private key which identifies your node on the Psiphon network."
@@ -4001,7 +4021,7 @@ restore_key() {
     echo ""
     read -p "Proceed with restore? [y/N] " confirm < /dev/tty || true
 
-    if [[ ! "$confirm" =~ ^[Yy] ]]; then
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "Restore cancelled."
         return 0
     fi
@@ -4059,7 +4079,7 @@ restore_key() {
 
     echo ""
     echo -e "${GREEN}✓ Node key restored successfully${NC}"
-    echo "  Node ID: ${CYAN}${node_id}${NC}"
+    echo -e "  Node ID: ${CYAN}${node_id}${NC}"
 }
 
 update_conduit() {
@@ -4069,13 +4089,25 @@ update_conduit() {
     echo "Current image: ${CONDUIT_IMAGE}"
     echo ""
 
-    # Check for updates by pulling
+    # Check for updates by pulling and capture output
     echo "Checking for updates..."
-    if ! docker pull "$CONDUIT_IMAGE" 2>/dev/null; then
+    local pull_output
+    pull_output=$(docker pull "$CONDUIT_IMAGE" 2>&1)
+    local pull_status=$?
+    echo "$pull_output"
+
+    if [ $pull_status -ne 0 ]; then
         echo -e "${RED}Failed to check for updates. Check your internet connection.${NC}"
         return 1
     fi
 
+
+    # Check if image was actually updated
+    if echo "$pull_output" | grep -q "Status: Image is up to date"; then
+        echo ""
+        echo -e "${GREEN}Already running the latest version. No update needed.${NC}"
+        return 0
+    fi
 
     echo ""
     echo "Recreating container(s) with updated image..."
@@ -4306,7 +4338,7 @@ main() {
         echo ""
         read -p "  Enter choice: " choice < /dev/tty || true
 
-        case $choice in
+        case "$choice" in
             1)
                 echo -e "${CYAN}Updating management script and opening menu...${NC}"
                 create_management_script
@@ -4384,7 +4416,7 @@ main() {
     print_summary
 
     read -p "Open management menu now? [Y/n] " open_menu < /dev/tty || true
-    if [[ ! "$open_menu" =~ ^[Nn] ]]; then
+    if [[ ! "$open_menu" =~ ^[Nn]$ ]]; then
         "$INSTALL_DIR/conduit" menu
     fi
 }
