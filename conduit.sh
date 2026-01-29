@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.2                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.1.0                          ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -1087,7 +1087,7 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 GEOIP_DIR="$INSTALL_DIR/geoip"
@@ -3265,6 +3265,6 @@ main() {
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 1.0.2
+# REACHED END OF SCRIPT - VERSION 1.1.0
 # ###############################################################################
 main "$@"
