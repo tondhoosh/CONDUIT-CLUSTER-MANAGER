@@ -5436,6 +5436,10 @@ telegram_setup_wizard() {
     echo -e "  ${CYAN}────────────────────────${NC}"
     echo -e "  1. Open your new bot in Telegram"
     echo -e "  2. Send it the message: ${YELLOW}/start${NC}"
+    echo -e ""
+    echo -e "  ${YELLOW}Important:${NC} You MUST send ${BOLD}/start${NC} to the bot first!"
+    echo -e "  The bot cannot respond to you until you do this."
+    echo -e ""
     echo -e "  3. Press Enter here when done..."
     echo ""
     read -p "  Press Enter after sending /start to your bot... " < /dev/tty || { trap - SIGINT; TELEGRAM_BOT_TOKEN="$_saved_token"; TELEGRAM_CHAT_ID="$_saved_chatid"; TELEGRAM_INTERVAL="$_saved_interval"; TELEGRAM_ENABLED="$_saved_enabled"; TELEGRAM_START_HOUR="$_saved_starthour"; TELEGRAM_SERVER_LABEL="$_saved_label"; return; }
