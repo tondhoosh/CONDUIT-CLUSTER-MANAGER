@@ -1596,7 +1596,13 @@ process_batch() {
         esac
         echo "${ip}|${country}" >> "$geo_map"
         # Country filtering: block if not in whitelist (case-insensitive match)
-        if [ -n "$ALLOWED_COUNTRIES" ]; then
+        # Skip Unknown/unresolved IPs and non-routable ranges (multicast, broadcast)
+        if [ -n "$ALLOWED_COUNTRIES" ] && [ "$country" != "Unknown" ]; then
+            # Skip multicast (224.x, 239.x) and broadcast (255.x)
+            case "$ip" in
+                224.*|239.*|255.255.255.255) continue ;;
+            esac
+            
             local country_lower=$(echo "$country" | tr '[:upper:]' '[:lower:]')
             local allowed_lower=$(echo "$ALLOWED_COUNTRIES" | tr '[:upper:]' '[:lower:]')
             if ! echo "|${allowed_lower}" | grep -qiF "|${country_lower}|"; then
@@ -3678,7 +3684,7 @@ configure_country_filter() {
     echo "  3. Clear whitelist (allow all)"
     echo "  4. View blocked IPs log"
     echo "  5. Clear ipset blocklist"
-    echo "  6. Block unknown/unresolved IPs"
+    echo "  6. Info: Unknown IPs behavior"
     echo "  0. Cancel"
     echo ""
     read -p "Choice: " choice < /dev/tty || return
@@ -3748,25 +3754,16 @@ configure_country_filter() {
             ;;
         6)
             echo ""
-            echo -e "This adds ${YELLOW}Unknown${NC} to the ${RED}block${NC} list."
-            echo "IPs that can't be geolocated will be blocked."
-            echo "(Broadcast/multicast IPs like 224.x, 239.x, 255.x are always Unknown)"
+            echo -e "${CYAN}Info: Unknown IPs${NC}"
             echo ""
-            read -p "Add 'Unknown' to block unresolved IPs? (y/n): " confirm < /dev/tty || return
-            if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                if [ -f "$conf" ] && grep -qix "unknown" "$conf" 2>/dev/null; then
-                    echo "'Unknown' already in whitelist (will NOT be blocked)."
-                else
-                    echo ""
-                    echo "Note: To block Unknown IPs, they must NOT be in the whitelist."
-                    echo "The tracker automatically blocks any country not in the whitelist."
-                    echo ""
-                    echo "Current setup will block Unknown IPs if your whitelist only has specific countries."
-                    echo -e "${GREEN}No action needed - Unknown IPs already blocked by default.${NC}"
-                fi
-            else
-                echo "Cancelled."
-            fi
+            echo "Unknown IPs are those that can't be geolocated:"
+            echo "  • IPs not in the GeoIP database"
+            echo "  • Local network traffic (224.x, 239.x, 255.x)"
+            echo ""
+            echo -e "${GREEN}✓ Unknown IPs are automatically SKIPPED from filtering${NC}"
+            echo "  (not tracked, not blocked, ignored)"
+            echo ""
+            echo "Only IPs with known countries are checked against your whitelist."
             echo ""
             ;;
         0|"")
