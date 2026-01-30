@@ -287,6 +287,10 @@ check_dependencies() {
         esac
     fi
 
+    if ! command -v ipset &>/dev/null; then
+        install_package ipset || log_warn "Could not install ipset (country filter will be limited)"
+    fi
+
     if ! command -v qrencode &>/dev/null; then
         install_package qrencode || log_warn "Could not install qrencode automatically"
     fi
@@ -1521,6 +1525,35 @@ AWK_BIN=$(command -v gawk 2>/dev/null || command -v awk 2>/dev/null || echo "awk
 LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$LOCAL_IP" ] && LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
+# Country filter: whitelist file and blocked-IP log
+ALLOWED_COUNTRIES_FILE="$PERSIST_DIR/../allowed_countries.conf"
+BLOCKED_LOG="$PERSIST_DIR/blocked_ips.log"
+
+load_whitelist() {
+    if [ ! -f "$ALLOWED_COUNTRIES_FILE" ]; then
+        echo ""
+        return
+    fi
+    grep -v '^#' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | tr '\n' '|'
+}
+
+ALLOWED_COUNTRIES=$(load_whitelist)
+
+# Create ipset for blocked IPs (if doesn't exist); add iptables rules for Conduit ports only
+if command -v ipset &>/dev/null; then
+    ipset create conduit_blocked hash:ip timeout 86400 2>/dev/null || true
+    if iptables -C INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null; then
+        :;
+    else
+        iptables -I INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    fi
+    if iptables -C INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null; then
+        :;
+    else
+        iptables -I INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    fi
+fi
+
 # Batch process: resolve GeoIP + merge into cumulative files in bulk
 process_batch() {
     local batch="$1"
@@ -1558,6 +1591,17 @@ process_batch() {
             *"Syrian Arab Republic"*) country="Syria" ;;
         esac
         echo "${ip}|${country}" >> "$geo_map"
+        # Country filtering: block if not in whitelist
+        if [ -n "$ALLOWED_COUNTRIES" ]; then
+            if ! echo "|${ALLOWED_COUNTRIES}" | grep -qF "|${country}|"; then
+                if command -v ipset &>/dev/null; then
+                    if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
+                        ipset add conduit_blocked "$ip" 2>/dev/null
+                        echo "$(date '+%Y-%m-%d %H:%M:%S') BLOCKED $ip ($country)" >> "$BLOCKED_LOG"
+                    fi
+                fi
+            fi
+        fi
     done < "$PERSIST_DIR/batch_ips"
 
     # Step 2: Single awk pass — merge batch into cumulative_data + write snapshot
@@ -2960,6 +3004,11 @@ uninstall_all() {
     rm -f /etc/init.d/conduit
 
     echo -e "${BLUE}[INFO]${NC} Removing configuration files..."
+    # Remove country filter iptables rules and ipset
+    iptables -D INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    iptables -D INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    ipset destroy conduit_blocked 2>/dev/null || true
+    rm -f /opt/conduit/allowed_countries.conf 2>/dev/null || true
     if [ "$keep_backups" = true ]; then
         # Keep backup directory, remove everything else in /opt/conduit
         echo -e "${BLUE}[INFO]${NC} Preserving backup keys in ${BACKUP_DIR}..."
@@ -3498,6 +3547,7 @@ show_settings_menu() {
             echo -e "  8. 📖 About Conduit"
             echo ""
             echo -e "  9. 🔄 Reset tracker data"
+            echo -e "  f. 🌍 Configure country filter"
             echo -e "  u. 🗑️  Uninstall"
             echo -e "  0. ← Back to main menu"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
@@ -3570,6 +3620,11 @@ show_settings_menu() {
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
+            f)
+                configure_country_filter
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
+                ;;
             u)
                 uninstall_all
                 exit 0
@@ -3584,6 +3639,72 @@ show_settings_menu() {
                 ;;
         esac
     done
+}
+
+configure_country_filter() {
+    local conf="/opt/conduit/allowed_countries.conf"
+
+    echo -e "${CYAN}Country Filter Configuration${NC}"
+    echo -e "Block connections from countries NOT in this list."
+    echo -e "Leave empty to allow all countries.\n"
+
+    if [ -f "$conf" ]; then
+        echo -e "Current whitelist:"
+        cat "$conf"
+        echo ""
+    else
+        echo -e "Currently: ${GREEN}Allow all countries${NC}\n"
+    fi
+
+    echo "Options:"
+    echo "  1. Edit whitelist (nano)"
+    echo "  2. Add country"
+    echo "  3. Clear whitelist (allow all)"
+    echo "  4. View blocked IPs log"
+    echo "  5. Clear ipset blocklist"
+    read -p "Choice: " choice
+
+    case "$choice" in
+        1)
+            if command -v nano &>/dev/null; then
+                nano "$conf"
+            else
+                ${EDITOR:-vi} "$conf" 2>/dev/null || vi "$conf"
+            fi
+            systemctl restart conduit-tracker 2>/dev/null || true
+            ;;
+        2)
+            read -p "Country name (exact match, e.g. Iran - #FreeIran): " country
+            if [ -n "$country" ]; then
+                echo "$country" >> "$conf"
+                systemctl restart conduit-tracker 2>/dev/null || true
+                echo -e "${GREEN}Added. Tracker restarted.${NC}"
+            fi
+            ;;
+        3)
+            rm -f "$conf"
+            systemctl restart conduit-tracker 2>/dev/null || true
+            echo -e "${GREEN}Cleared. Allow all countries.${NC}"
+            ;;
+        4)
+            if [ -f /opt/conduit/traffic_stats/blocked_ips.log ]; then
+                less /opt/conduit/traffic_stats/blocked_ips.log
+            else
+                echo "No blocked IPs logged yet."
+            fi
+            ;;
+        5)
+            if command -v ipset &>/dev/null && ipset list conduit_blocked &>/dev/null; then
+                ipset flush conduit_blocked
+                echo -e "${GREEN}Blocklist cleared.${NC}"
+            else
+                echo "ipset conduit_blocked not found or empty."
+            fi
+            ;;
+        *)
+            echo "No action."
+            ;;
+    esac
 }
 
 show_menu() {
@@ -3895,6 +4016,7 @@ show_help() {
     echo "  scale     Scale containers (1-5)"
     echo "  backup    Backup Conduit node identity key"
     echo "  restore   Restore Conduit node identity from backup"
+    echo "  filter    Configure country whitelist (allow only specific countries)"
     echo "  uninstall Remove everything (container, data, service)"
     echo "  menu      Open interactive menu (default)"
     echo "  version   Show version information"
@@ -4300,6 +4422,7 @@ case "${1:-menu}" in
     backup)   backup_key ;;
     restore)  restore_key ;;
     scale)    manage_containers ;;
+    filter)   configure_country_filter ;;
     about)    show_about ;;
     uninstall) uninstall_all ;;
     version|-v|--version) show_version ;;
