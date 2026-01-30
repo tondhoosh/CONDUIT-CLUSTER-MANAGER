@@ -1614,30 +1614,131 @@ process_batch() {
     rm -f "$PERSIST_DIR/batch_ips" "$geo_map" "$resolved"
 }
 
+# Auto-restart stuck containers (no peers for 2+ hours)
+LAST_STUCK_CHECK=0
+declare -A CONTAINER_LAST_ACTIVE
+declare -A CONTAINER_LAST_RESTART
+STUCK_THRESHOLD=7200      # 2 hours in seconds
+STUCK_CHECK_INTERVAL=900  # Check every 15 minutes
+
+check_stuck_containers() {
+    local now=$(date +%s)
+    # Skip if data cap exceeded (containers intentionally stopped)
+    if [ -f "$PERSIST_DIR/data_cap_exceeded" ]; then
+        return
+    fi
+    # Find all running conduit containers
+    local containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^conduit(-[0-9]+)?$')
+    [ -z "$containers" ] && return
+
+    for cname in $containers; do
+        # Get last 50 lines of logs
+        local logs=$(docker logs --tail 50 "$cname" 2>&1)
+        local has_stats
+        has_stats=$(echo "$logs" | grep -c "\[STATS\]" 2>/dev/null) || true
+        has_stats=${has_stats:-0}
+        local connected=0
+        if [ "$has_stats" -gt 0 ]; then
+            local last_stat=$(echo "$logs" | grep "\[STATS\]" | tail -1)
+            local parsed=$(echo "$last_stat" | sed -n 's/.*Connected:[[:space:]]*\([0-9]*\).*/\1/p')
+            if [ -z "$parsed" ]; then
+                # Stats exist but format unrecognized — treat as active
+                CONTAINER_LAST_ACTIVE[$cname]=$now
+                continue
+            fi
+            connected=$parsed
+        fi
+
+        # If container has peers or stats activity, mark as active
+        if [ "$connected" -gt 0 ]; then
+            CONTAINER_LAST_ACTIVE[$cname]=$now
+            continue
+        fi
+
+        # Initialize first-seen time if not tracked yet
+        if [ -z "${CONTAINER_LAST_ACTIVE[$cname]:-}" ]; then
+            CONTAINER_LAST_ACTIVE[$cname]=$now
+            continue
+        fi
+
+        # Check if stuck for 2+ hours
+        local last_active=${CONTAINER_LAST_ACTIVE[$cname]:-$now}
+        local idle_time=$((now - last_active))
+        if [ "$idle_time" -ge "$STUCK_THRESHOLD" ]; then
+            # Check cooldown — don't restart if restarted within last 2 hours
+            local last_restart=${CONTAINER_LAST_RESTART[$cname]:-0}
+            if [ $((now - last_restart)) -lt "$STUCK_THRESHOLD" ]; then
+                continue
+            fi
+
+            # Check container still exists and has been running long enough
+            local started=$(docker inspect --format='{{.State.StartedAt}}' "$cname" 2>/dev/null | cut -d'.' -f1)
+            if [ -z "$started" ]; then
+                # Container no longer exists, clean up tracking
+                unset CONTAINER_LAST_ACTIVE[$cname] 2>/dev/null
+                unset CONTAINER_LAST_RESTART[$cname] 2>/dev/null
+                continue
+            fi
+            local start_epoch=$(date -d "$started" +%s 2>/dev/null || echo "$now")
+            local uptime=$((now - start_epoch))
+            if [ "$uptime" -lt "$STUCK_THRESHOLD" ]; then
+                continue
+            fi
+
+            echo "[TRACKER] Auto-restarting stuck container: $cname (no peers for ${idle_time}s)"
+            if docker restart "$cname" >/dev/null 2>&1; then
+                CONTAINER_LAST_RESTART[$cname]=$now
+                CONTAINER_LAST_ACTIVE[$cname]=$now
+            fi
+        fi
+    done
+}
+
 # Main capture loop: tcpdump -> awk -> batch process
 LAST_BACKUP=0
 while true; do
     BATCH_FILE="$PERSIST_DIR/batch_tmp"
     > "$BATCH_FILE"
 
-    while IFS= read -r line; do
-        if [ "$line" = "SYNC_MARKER" ]; then
-            # Process entire batch at once
-            if [ -s "$BATCH_FILE" ]; then
-                > "$SNAPSHOT_FILE"
-                process_batch "$BATCH_FILE"
+    while true; do
+        if IFS= read -t 60 -r line; then
+            if [ "$line" = "SYNC_MARKER" ]; then
+                # Process entire batch at once
+                if [ -s "$BATCH_FILE" ]; then
+                    > "$SNAPSHOT_FILE"
+                    process_batch "$BATCH_FILE"
+                fi
+                > "$BATCH_FILE"
+                # Periodic backup every 3 hours
+                NOW=$(date +%s)
+                if [ $((NOW - LAST_BACKUP)) -ge 10800 ]; then
+                    [ -s "$STATS_FILE" ] && cp "$STATS_FILE" "$PERSIST_DIR/cumulative_data.bak"
+                    [ -s "$IPS_FILE" ] && cp "$IPS_FILE" "$PERSIST_DIR/cumulative_ips.bak"
+                    LAST_BACKUP=$NOW
+                fi
+                # Check for stuck containers every 15 minutes
+                if [ $((NOW - LAST_STUCK_CHECK)) -ge "$STUCK_CHECK_INTERVAL" ]; then
+                    check_stuck_containers
+                    LAST_STUCK_CHECK=$NOW
+                fi
+                continue
             fi
-            > "$BATCH_FILE"
-            # Periodic backup every 3 hours
-            NOW=$(date +%s)
-            if [ $((NOW - LAST_BACKUP)) -ge 10800 ]; then
-                [ -s "$STATS_FILE" ] && cp "$STATS_FILE" "$PERSIST_DIR/cumulative_data.bak"
-                [ -s "$IPS_FILE" ] && cp "$IPS_FILE" "$PERSIST_DIR/cumulative_ips.bak"
-                LAST_BACKUP=$NOW
+            echo "$line" >> "$BATCH_FILE"
+        else
+            # read timed out or EOF — check stuck containers even with no traffic
+            rc=$?
+            if [ $rc -gt 128 ]; then
+                # Timeout — no traffic, still check for stuck containers
+                NOW=$(date +%s)
+                if [ $((NOW - LAST_STUCK_CHECK)) -ge "$STUCK_CHECK_INTERVAL" ]; then
+                    check_stuck_containers
+                    LAST_STUCK_CHECK=$NOW
+                fi
+            else
+                # EOF — tcpdump exited, break to outer loop to restart
+                break
             fi
-            continue
         fi
-        echo "$line" >> "$BATCH_FILE"
     done < <($TCPDUMP_BIN -tt -l -ni any -n -q "(tcp or udp) and not port 22" 2>/dev/null | $AWK_BIN -v local_ip="$LOCAL_IP" '
     BEGIN { last_sync = 0; OFMT = "%.0f"; CONVFMT = "%.0f" }
     {
@@ -3089,6 +3190,8 @@ manage_containers() {
                 else
                     echo -e "  ${RED}Invalid.${NC}"
                 fi
+                # Ensure tracker service is running when containers are started
+                setup_tracker_service 2>/dev/null || true
                 read -n 1 -s -r -p "  Press any key..." < /dev/tty || true
                 ;;
             t)
@@ -3232,6 +3335,8 @@ check_data_cap() {
             DATA_CAP_BASELINE_TX=$(cat /sys/class/net/${DATA_CAP_IFACE:-$(get_default_iface)}/statistics/tx_bytes 2>/dev/null || echo 0)
             save_settings
             _DATA_CAP_LAST_SAVED=$total_used
+            # Signal tracker to skip stuck-container restarts
+            touch "$PERSIST_DIR/data_cap_exceeded" 2>/dev/null
             for i in $(seq 1 $CONTAINER_COUNT); do
                 local name=$(get_container_name $i)
                 docker stop "$name" 2>/dev/null || true
@@ -3240,6 +3345,7 @@ check_data_cap() {
         return 1  # cap exceeded
     else
         DATA_CAP_EXCEEDED=false
+        rm -f "$PERSIST_DIR/data_cap_exceeded" 2>/dev/null
     fi
     return 0
 }
