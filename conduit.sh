@@ -1459,9 +1459,16 @@ get_local_ips() {
     echo ""
 }
 
-# GeoIP lookup with file-based cache
+# GeoIP lookup with file-based cache (local DB + optional API fallback for Unknown)
 geo_lookup() {
     local ip="$1"
+    # Skip non-routable: multicast, broadcast, private (no point looking up)
+    case "$ip" in
+        0.*|10.*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|224.*|239.*|255.255.255.255)
+            echo "Unknown"
+            return
+            ;;
+    esac
     # Check cache
     if [ -f "$GEOIP_CACHE" ]; then
         local cached=$(grep "^${ip}|" "$GEOIP_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
@@ -1473,7 +1480,8 @@ geo_lookup() {
     local country=""
     if command -v geoiplookup &>/dev/null; then
         country=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ *//' | cut -d, -f2- | sed 's/^ *//')
-    elif command -v mmdblookup &>/dev/null; then
+    fi
+    if [ -z "$country" ] && command -v mmdblookup &>/dev/null; then
         local mmdb=""
         for f in /usr/share/GeoIP/GeoLite2-Country.mmdb /var/lib/GeoIP/GeoLite2-Country.mmdb; do
             [ -f "$f" ] && mmdb="$f" && break
@@ -1482,10 +1490,15 @@ geo_lookup() {
             country=$(mmdblookup --file "$mmdb" --ip "$ip" country names en 2>/dev/null | grep -o '"[^"]*"' | tr -d '"')
         fi
     fi
-    # Normalize "not found" variations to Unknown
+    # Normalize "not found" variations
     case "$country" in
-        ""|*"not found"*|*"Not Found"*) country="Unknown" ;;
+        ""|*"not found"*|*"Not Found"*) country="" ;;
     esac
+    # API fallback for Unknown (e.g. Cloudflare, CDN) — ip-api.com free, no key, 45 req/min
+    if [ -z "$country" ] && command -v curl &>/dev/null; then
+        country=$(curl -s --max-time 2 "http://ip-api.com/json/${ip}?fields=country" 2>/dev/null | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
+    fi
+    [ -z "$country" ] && country="Unknown"
     # Cache it (limit cache size)
     if [ -f "$GEOIP_CACHE" ]; then
         local cache_lines=$(wc -l < "$GEOIP_CACHE" 2>/dev/null || echo 0)
@@ -1537,8 +1550,17 @@ load_whitelist() {
         echo ""
         return
     fi
-    grep -v '^#' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | tr '\n' '|'
+    grep -v '^#' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | grep -v '^BLOCK_UNKNOWN=' | grep -v '^[[:space:]]*$' | tr '\n' '|'
 }
+
+# BLOCK_UNKNOWN=no (default): IPs without geolocation are accepted
+# BLOCK_UNKNOWN=yes: IPs without geolocation are blocked
+BLOCK_UNKNOWN=no
+if [ -f "$ALLOWED_COUNTRIES_FILE" ]; then
+    line=$(grep '^BLOCK_UNKNOWN=' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | head -1)
+    [ -n "$line" ] && BLOCK_UNKNOWN=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+fi
+[ "$BLOCK_UNKNOWN" != "yes" ] && BLOCK_UNKNOWN=no
 
 ALLOWED_COUNTRIES=$(load_whitelist)
 
@@ -1596,21 +1618,35 @@ process_batch() {
         esac
         echo "${ip}|${country}" >> "$geo_map"
         # Country filtering: block if not in whitelist (case-insensitive match)
-        # Skip Unknown/unresolved IPs and non-routable ranges (multicast, broadcast)
-        if [ -n "$ALLOWED_COUNTRIES" ] && [ "$country" != "Unknown" ]; then
-            # Skip multicast (224.x, 239.x) and broadcast (255.x)
-            case "$ip" in
-                224.*|239.*|255.255.255.255) continue ;;
-            esac
-            
-            local country_lower=$(echo "$country" | tr '[:upper:]' '[:lower:]')
-            local allowed_lower=$(echo "$ALLOWED_COUNTRIES" | tr '[:upper:]' '[:lower:]')
-            if ! echo "|${allowed_lower}" | grep -qiF "|${country_lower}|"; then
+        # Unknown IPs: accept by default; block only if BLOCK_UNKNOWN=yes
+        # Skip non-routable ranges (multicast, broadcast) from blocking
+        if [ -z "$ALLOWED_COUNTRIES" ]; then
+            continue
+        fi
+        case "$ip" in
+            224.*|239.*|255.255.255.255) continue ;;
+        esac
+
+        if [ "$country" = "Unknown" ]; then
+            # No geolocation: accept unless user set BLOCK_UNKNOWN=yes
+            if [ "$BLOCK_UNKNOWN" = "yes" ]; then
                 if command -v ipset &>/dev/null; then
                     if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
                         ipset add conduit_blocked "$ip" 2>/dev/null
                         echo "$(date '+%Y-%m-%d %H:%M:%S') BLOCKED $ip ($country)" >> "$BLOCKED_LOG"
                     fi
+                fi
+            fi
+            continue
+        fi
+
+        local country_lower=$(echo "$country" | tr '[:upper:]' '[:lower:]')
+        local allowed_lower=$(echo "$ALLOWED_COUNTRIES" | tr '[:upper:]' '[:lower:]')
+        if ! echo "|${allowed_lower}" | grep -qiF "|${country_lower}|"; then
+            if command -v ipset &>/dev/null; then
+                if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
+                    ipset add conduit_blocked "$ip" 2>/dev/null
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') BLOCKED $ip ($country)" >> "$BLOCKED_LOG"
                 fi
             fi
         fi
@@ -3667,10 +3703,21 @@ configure_country_filter() {
     # Always show file path for debugging
     echo -e "${DIM}Config file: $conf${NC}"
     
+    # Show BLOCK_UNKNOWN setting
+    local block_unknown=no
+    [ -f "$conf" ] && line=$(grep '^BLOCK_UNKNOWN=' "$conf" 2>/dev/null | head -1) && [ -n "$line" ] && block_unknown=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+    [ "$block_unknown" != "yes" ] && block_unknown=no
+    if [ "$block_unknown" = "yes" ]; then
+        echo -e "Unknown IPs (no geolocation): ${RED}blocked${NC}"
+    else
+        echo -e "Unknown IPs (no geolocation): ${GREEN}accepted${NC}"
+    fi
+    echo ""
+
     if [ -f "$conf" ] && [ -s "$conf" ]; then
         echo -e "${GREEN}✓ Filter ACTIVE - Allowed countries:${NC}"
         while IFS= read -r line; do
-            [ -n "$line" ] && [[ ! "$line" =~ ^# ]] && echo "  • $line"
+            [ -n "$line" ] && [[ ! "$line" =~ ^# ]] && [[ ! "$line" =~ ^BLOCK_UNKNOWN= ]] && echo "  • $line"
         done < "$conf"
         echo ""
     else
@@ -3684,7 +3731,8 @@ configure_country_filter() {
     echo "  3. Clear whitelist (allow all)"
     echo "  4. View blocked IPs log"
     echo "  5. Clear ipset blocklist"
-    echo "  6. Info: Unknown IPs behavior"
+    echo "  6. Unknown IPs: accept (default) / block"
+    echo "  7. Refresh GeoIP cache (re-resolve Unknown IPs via API)"
     echo "  0. Cancel"
     echo ""
     read -p "Choice: " choice < /dev/tty || return
@@ -3754,16 +3802,55 @@ configure_country_filter() {
             ;;
         6)
             echo ""
-            echo -e "${CYAN}Info: Unknown IPs${NC}"
+            local block_unknown=no
+            [ -f "$conf" ] && line=$(grep '^BLOCK_UNKNOWN=' "$conf" 2>/dev/null | head -1) && [ -n "$line" ] && block_unknown=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+            [ "$block_unknown" != "yes" ] && block_unknown=no
+            echo "Unknown IPs = IPs without geolocation (e.g. Cloudflare, multicast)."
+            echo "Default: accept (allow). You can switch to block."
             echo ""
-            echo "Unknown IPs are those that can't be geolocated:"
-            echo "  • IPs not in the GeoIP database"
-            echo "  • Local network traffic (224.x, 239.x, 255.x)"
+            if [ "$block_unknown" = "yes" ]; then
+                echo -e "Current: ${RED}Block unknown IPs${NC}"
+                read -p "Switch to ACCEPT unknown IPs? (y/n): " confirm < /dev/tty || return
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    if [ -f "$conf" ]; then
+                        sed -i '/^BLOCK_UNKNOWN=/d' "$conf"
+                        echo "BLOCK_UNKNOWN=no" >> "$conf"
+                    else
+                        echo "BLOCK_UNKNOWN=no" > "$conf"
+                    fi
+                    echo -e "${GREEN}✓ Unknown IPs will be ACCEPTED. Tracker restarted.${NC}"
+                    systemctl restart conduit-tracker 2>/dev/null || true
+                fi
+            else
+                echo -e "Current: ${GREEN}Accept unknown IPs${NC} (default)"
+                read -p "Switch to BLOCK unknown IPs? (y/n): " confirm < /dev/tty || return
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    if [ -f "$conf" ]; then
+                        sed -i '/^BLOCK_UNKNOWN=/d' "$conf"
+                        echo "BLOCK_UNKNOWN=yes" >> "$conf"
+                    else
+                        echo "BLOCK_UNKNOWN=yes" > "$conf"
+                    fi
+                    echo -e "${YELLOW}✓ Unknown IPs will be BLOCKED. Tracker restarted.${NC}"
+                    systemctl restart conduit-tracker 2>/dev/null || true
+                fi
+            fi
             echo ""
-            echo -e "${GREEN}✓ Unknown IPs are automatically SKIPPED from filtering${NC}"
-            echo "  (not tracked, not blocked, ignored)"
+            ;;
+        7)
             echo ""
-            echo "Only IPs with known countries are checked against your whitelist."
+            local cache_file="/opt/conduit/traffic_stats/geoip_cache"
+            if [ ! -f "$cache_file" ]; then
+                echo "No GeoIP cache file found."
+            else
+                local before=$(wc -l < "$cache_file" 2>/dev/null || echo 0)
+                grep -v '|Unknown$' "$cache_file" > "${cache_file}.tmp" 2>/dev/null && mv "${cache_file}.tmp" "$cache_file"
+                local after=$(wc -l < "$cache_file" 2>/dev/null || echo 0)
+                local removed=$((before - after))
+                echo -e "${GREEN}✓ Removed $removed Unknown IP(s) from cache.${NC}"
+                echo "They will be re-resolved (local DB + ip-api.com) on next traffic."
+                systemctl restart conduit-tracker 2>/dev/null || true
+            fi
             echo ""
             ;;
         0|"")
