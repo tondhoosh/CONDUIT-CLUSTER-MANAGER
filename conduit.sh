@@ -1482,7 +1482,10 @@ geo_lookup() {
             country=$(mmdblookup --file "$mmdb" --ip "$ip" country names en 2>/dev/null | grep -o '"[^"]*"' | tr -d '"')
         fi
     fi
-    [ -z "$country" ] && country="Unknown"
+    # Normalize "not found" variations to Unknown
+    case "$country" in
+        ""|*"not found"*|*"Not Found"*) country="Unknown" ;;
+    esac
     # Cache it (limit cache size)
     if [ -f "$GEOIP_CACHE" ]; then
         local cache_lines=$(wc -l < "$GEOIP_CACHE" 2>/dev/null || echo 0)
@@ -1577,9 +1580,10 @@ process_batch() {
         fi
         # Strip country code prefix (e.g. "US, United States" -> "United States")
         country=$(echo "$country" | sed 's/^[A-Z][A-Z], //')
-        # Normalize
+        # Normalize country names and "not found" variations
         case "$country" in
-            *Iran*) country="Iran - #FreeIran" ;;
+            ""|*"not found"*|*"Not Found"*) country="Unknown" ;;
+            *Iran*) country="Iran" ;;
             *Moldova*) country="Moldova" ;;
             *Korea*Republic*|*"South Korea"*) country="South Korea" ;;
             *"Russian Federation"*|*Russia*) country="Russia" ;;
@@ -1591,9 +1595,11 @@ process_batch() {
             *"Syrian Arab Republic"*) country="Syria" ;;
         esac
         echo "${ip}|${country}" >> "$geo_map"
-        # Country filtering: block if not in whitelist
+        # Country filtering: block if not in whitelist (case-insensitive match)
         if [ -n "$ALLOWED_COUNTRIES" ]; then
-            if ! echo "|${ALLOWED_COUNTRIES}" | grep -qF "|${country}|"; then
+            local country_lower=$(echo "$country" | tr '[:upper:]' '[:lower:]')
+            local allowed_lower=$(echo "$ALLOWED_COUNTRIES" | tr '[:upper:]' '[:lower:]')
+            if ! echo "|${allowed_lower}" | grep -qiF "|${country_lower}|"; then
                 if command -v ipset &>/dev/null; then
                     if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
                         ipset add conduit_blocked "$ip" 2>/dev/null
@@ -3652,21 +3658,27 @@ configure_country_filter() {
     echo -e "Leave empty to allow all countries."
     echo ""
 
+    # Always show file path for debugging
+    echo -e "${DIM}Config file: $conf${NC}"
+    
     if [ -f "$conf" ] && [ -s "$conf" ]; then
-        echo -e "${GREEN}Current whitelist:${NC}"
-        cat "$conf"
+        echo -e "${GREEN}✓ Filter ACTIVE - Allowed countries:${NC}"
+        while IFS= read -r line; do
+            [ -n "$line" ] && [[ ! "$line" =~ ^# ]] && echo "  • $line"
+        done < "$conf"
         echo ""
     else
-        echo -e "Currently: ${GREEN}Allow all countries${NC}"
+        echo -e "${YELLOW}⚠ Filter INACTIVE - All countries allowed${NC}"
         echo ""
     fi
 
     echo -e "${CYAN}Options:${NC}"
     echo "  1. Edit whitelist (nano)"
-    echo "  2. Add country"
+    echo "  2. Add country to whitelist"
     echo "  3. Clear whitelist (allow all)"
     echo "  4. View blocked IPs log"
     echo "  5. Clear ipset blocklist"
+    echo "  6. Block unknown/unresolved IPs"
     echo "  0. Cancel"
     echo ""
     read -p "Choice: " choice < /dev/tty || return
@@ -3675,9 +3687,9 @@ configure_country_filter() {
         1)
             echo ""
             if command -v nano &>/dev/null; then
-                nano "$conf"
+                nano "$conf" </dev/tty >/dev/tty 2>&1
             else
-                ${EDITOR:-vi} "$conf" 2>/dev/null || vi "$conf"
+                ${EDITOR:-vi} "$conf" </dev/tty >/dev/tty 2>&1
             fi
             echo ""
             echo "Restarting tracker to apply changes..."
@@ -3687,7 +3699,7 @@ configure_country_filter() {
             ;;
         2)
             echo ""
-            read -p "Country name (exact match, e.g. Iran - #FreeIran): " country < /dev/tty || return
+            read -p "Country name (case-insensitive, e.g. iran, russia, china): " country < /dev/tty || return
             if [ -n "$country" ]; then
                 echo "$country" >> "$conf"
                 echo "Restarting tracker to apply changes..."
@@ -3731,6 +3743,29 @@ configure_country_filter() {
                 fi
             else
                 echo "ipset conduit_blocked not found or ipset not installed."
+            fi
+            echo ""
+            ;;
+        6)
+            echo ""
+            echo -e "This adds ${YELLOW}Unknown${NC} to the ${RED}block${NC} list."
+            echo "IPs that can't be geolocated will be blocked."
+            echo "(Broadcast/multicast IPs like 224.x, 239.x, 255.x are always Unknown)"
+            echo ""
+            read -p "Add 'Unknown' to block unresolved IPs? (y/n): " confirm < /dev/tty || return
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                if [ -f "$conf" ] && grep -qix "unknown" "$conf" 2>/dev/null; then
+                    echo "'Unknown' already in whitelist (will NOT be blocked)."
+                else
+                    echo ""
+                    echo "Note: To block Unknown IPs, they must NOT be in the whitelist."
+                    echo "The tracker automatically blocks any country not in the whitelist."
+                    echo ""
+                    echo "Current setup will block Unknown IPs if your whitelist only has specific countries."
+                    echo -e "${GREEN}No action needed - Unknown IPs already blocked by default.${NC}"
+                fi
+            else
+                echo "Cancelled."
             fi
             echo ""
             ;;
