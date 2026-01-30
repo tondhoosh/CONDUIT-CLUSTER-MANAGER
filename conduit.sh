@@ -287,6 +287,10 @@ check_dependencies() {
         esac
     fi
 
+    if ! command -v ipset &>/dev/null; then
+        install_package ipset || log_warn "Could not install ipset (country filter will be limited)"
+    fi
+
     if ! command -v qrencode &>/dev/null; then
         install_package qrencode || log_warn "Could not install qrencode automatically"
     fi
@@ -1455,9 +1459,16 @@ get_local_ips() {
     echo ""
 }
 
-# GeoIP lookup with file-based cache
+# GeoIP lookup with file-based cache (local DB + optional API fallback for Unknown)
 geo_lookup() {
     local ip="$1"
+    # Skip non-routable: multicast, broadcast, private (no point looking up)
+    case "$ip" in
+        0.*|10.*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|224.*|239.*|255.255.255.255)
+            echo "Unknown"
+            return
+            ;;
+    esac
     # Check cache
     if [ -f "$GEOIP_CACHE" ]; then
         local cached=$(grep "^${ip}|" "$GEOIP_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
@@ -1469,7 +1480,8 @@ geo_lookup() {
     local country=""
     if command -v geoiplookup &>/dev/null; then
         country=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ *//' | cut -d, -f2- | sed 's/^ *//')
-    elif command -v mmdblookup &>/dev/null; then
+    fi
+    if [ -z "$country" ] && command -v mmdblookup &>/dev/null; then
         local mmdb=""
         for f in /usr/share/GeoIP/GeoLite2-Country.mmdb /var/lib/GeoIP/GeoLite2-Country.mmdb; do
             [ -f "$f" ] && mmdb="$f" && break
@@ -1477,6 +1489,14 @@ geo_lookup() {
         if [ -n "$mmdb" ]; then
             country=$(mmdblookup --file "$mmdb" --ip "$ip" country names en 2>/dev/null | grep -o '"[^"]*"' | tr -d '"')
         fi
+    fi
+    # Normalize "not found" variations
+    case "$country" in
+        ""|*"not found"*|*"Not Found"*) country="" ;;
+    esac
+    # API fallback for Unknown (e.g. Cloudflare, CDN) — ip-api.com free, no key, 45 req/min
+    if [ -z "$country" ] && command -v curl &>/dev/null; then
+        country=$(curl -s --max-time 2 "http://ip-api.com/json/${ip}?fields=country" 2>/dev/null | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
     fi
     [ -z "$country" ] && country="Unknown"
     # Cache it (limit cache size)
@@ -1521,6 +1541,46 @@ AWK_BIN=$(command -v gawk 2>/dev/null || command -v awk 2>/dev/null || echo "awk
 LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$LOCAL_IP" ] && LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
+# Country filter: whitelist file and blocked-IP log
+ALLOWED_COUNTRIES_FILE="$PERSIST_DIR/../allowed_countries.conf"
+BLOCKED_LOG="$PERSIST_DIR/blocked_ips.log"
+BLOCKED_LOG_MAX_LINES=10000
+BLOCKED_LOG_KEEP_LINES=5000
+
+load_whitelist() {
+    if [ ! -f "$ALLOWED_COUNTRIES_FILE" ]; then
+        echo ""
+        return
+    fi
+    grep -v '^#' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | grep -v '^BLOCK_UNKNOWN=' | grep -v '^[[:space:]]*$' | tr '\n' '|'
+}
+
+# BLOCK_UNKNOWN=no (default): IPs without geolocation are accepted
+# BLOCK_UNKNOWN=yes: IPs without geolocation are blocked
+BLOCK_UNKNOWN=no
+if [ -f "$ALLOWED_COUNTRIES_FILE" ]; then
+    line=$(grep '^BLOCK_UNKNOWN=' "$ALLOWED_COUNTRIES_FILE" 2>/dev/null | head -1)
+    [ -n "$line" ] && BLOCK_UNKNOWN=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+fi
+[ "$BLOCK_UNKNOWN" != "yes" ] && BLOCK_UNKNOWN=no
+
+ALLOWED_COUNTRIES=$(load_whitelist)
+
+# Create ipset for blocked IPs (if doesn't exist); add iptables rules for Conduit ports only
+if command -v ipset &>/dev/null; then
+    ipset create conduit_blocked hash:ip timeout 86400 2>/dev/null || true
+    if iptables -C INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null; then
+        :;
+    else
+        iptables -I INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    fi
+    if iptables -C INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null; then
+        :;
+    else
+        iptables -I INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    fi
+fi
+
 # Batch process: resolve GeoIP + merge into cumulative files in bulk
 process_batch() {
     local batch="$1"
@@ -1544,9 +1604,10 @@ process_batch() {
         fi
         # Strip country code prefix (e.g. "US, United States" -> "United States")
         country=$(echo "$country" | sed 's/^[A-Z][A-Z], //')
-        # Normalize
+        # Normalize country names and "not found" variations
         case "$country" in
-            *Iran*) country="Iran - #FreeIran" ;;
+            ""|*"not found"*|*"Not Found"*) country="Unknown" ;;
+            *Iran*) country="Iran" ;;
             *Moldova*) country="Moldova" ;;
             *Korea*Republic*|*"South Korea"*) country="South Korea" ;;
             *"Russian Federation"*|*Russia*) country="Russia" ;;
@@ -1558,7 +1619,48 @@ process_batch() {
             *"Syrian Arab Republic"*) country="Syria" ;;
         esac
         echo "${ip}|${country}" >> "$geo_map"
+        # Country filtering: block if not in whitelist (case-insensitive match)
+        # Unknown IPs: accept by default; block only if BLOCK_UNKNOWN=yes
+        # Skip non-routable ranges (multicast, broadcast) from blocking
+        if [ -z "$ALLOWED_COUNTRIES" ]; then
+            continue
+        fi
+        case "$ip" in
+            224.*|239.*|255.255.255.255) continue ;;
+        esac
+
+        if [ "$country" = "Unknown" ]; then
+            # No geolocation: accept unless user set BLOCK_UNKNOWN=yes
+            if [ "$BLOCK_UNKNOWN" = "yes" ]; then
+                if command -v ipset &>/dev/null; then
+                    if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
+                        ipset add conduit_blocked "$ip" 2>/dev/null
+                        echo "$(date '+%Y-%m-%d %H:%M:%S') BLOCKED $ip ($country)" >> "$BLOCKED_LOG"
+                    fi
+                fi
+            fi
+            continue
+        fi
+
+        local country_lower=$(echo "$country" | tr '[:upper:]' '[:lower:]')
+        local allowed_lower=$(echo "$ALLOWED_COUNTRIES" | tr '[:upper:]' '[:lower:]')
+        if ! echo "|${allowed_lower}" | grep -qiF "|${country_lower}|"; then
+            if command -v ipset &>/dev/null; then
+                if ! ipset test conduit_blocked "$ip" 2>/dev/null; then
+                    ipset add conduit_blocked "$ip" 2>/dev/null
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') BLOCKED $ip ($country)" >> "$BLOCKED_LOG"
+                fi
+            fi
+        fi
     done < "$PERSIST_DIR/batch_ips"
+
+    # Rotate blocked_ips.log if too large (avoid unbounded storage)
+    if [ -f "$BLOCKED_LOG" ]; then
+        local log_lines=$(wc -l < "$BLOCKED_LOG" 2>/dev/null || echo 0)
+        if [ "$log_lines" -gt "$BLOCKED_LOG_MAX_LINES" ]; then
+            tail -n "$BLOCKED_LOG_KEEP_LINES" "$BLOCKED_LOG" > "${BLOCKED_LOG}.tmp" && mv "${BLOCKED_LOG}.tmp" "$BLOCKED_LOG"
+        fi
+    fi
 
     # Step 2: Single awk pass — merge batch into cumulative_data + write snapshot
     $AWK_BIN -F'|' -v snap="$SNAPSHOT_FILE" '
@@ -1571,12 +1673,10 @@ process_batch() {
             if (c == "") c = "Unknown"
             if (dir == "FROM") from_bytes[c] += bytes
             else to_bytes[c] += bytes
-            # Also collect snapshot lines
             print dir "|" c "|" bytes "|" ip > snap
             next
         }
         END {
-            # Merge existing + new
             for (c in existing) {
                 split(existing[c], v, "|")
                 f = v[1] + 0; t = v[2] + 0
@@ -1586,7 +1686,6 @@ process_batch() {
                 delete from_bytes[c]
                 delete to_bytes[c]
             }
-            # New countries not in existing
             for (c in from_bytes) {
                 f = from_bytes[c] + 0
                 t = to_bytes[c] + 0
@@ -2960,6 +3059,11 @@ uninstall_all() {
     rm -f /etc/init.d/conduit
 
     echo -e "${BLUE}[INFO]${NC} Removing configuration files..."
+    # Remove country filter iptables rules and ipset
+    iptables -D INPUT -p tcp --dport 443 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    iptables -D INPUT -p udp --dport 16384:32768 -m set --match-set conduit_blocked src -j DROP 2>/dev/null || true
+    ipset destroy conduit_blocked 2>/dev/null || true
+    rm -f /opt/conduit/allowed_countries.conf 2>/dev/null || true
     if [ "$keep_backups" = true ]; then
         # Keep backup directory, remove everything else in /opt/conduit
         echo -e "${BLUE}[INFO]${NC} Preserving backup keys in ${BACKUP_DIR}..."
@@ -3498,6 +3602,7 @@ show_settings_menu() {
             echo -e "  8. 📖 About Conduit"
             echo ""
             echo -e "  9. 🔄 Reset tracker data"
+            echo -e "  f. 🌍 Configure country filter"
             echo -e "  u. 🗑️  Uninstall"
             echo -e "  0. ← Back to main menu"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
@@ -3570,6 +3675,11 @@ show_settings_menu() {
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
+            f)
+                configure_country_filter
+                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                redraw=true
+                ;;
             u)
                 uninstall_all
                 exit 0
@@ -3584,6 +3694,218 @@ show_settings_menu() {
                 ;;
         esac
     done
+}
+
+configure_country_filter() {
+    local conf="/opt/conduit/allowed_countries.conf"
+
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  COUNTRY FILTER CONFIGURATION${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "Block connections from countries ${BOLD}NOT${NC} in this list."
+    echo -e "Leave empty to allow all countries."
+    echo ""
+
+    # Always show file path for debugging
+    echo -e "${DIM}Config file: $conf${NC}"
+    
+    # Show BLOCK_UNKNOWN setting
+    local block_unknown=no
+    [ -f "$conf" ] && line=$(grep '^BLOCK_UNKNOWN=' "$conf" 2>/dev/null | head -1) && [ -n "$line" ] && block_unknown=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+    [ "$block_unknown" != "yes" ] && block_unknown=no
+    if [ "$block_unknown" = "yes" ]; then
+        echo -e "Unknown IPs (no geolocation): ${RED}blocked${NC}"
+    else
+        echo -e "Unknown IPs (no geolocation): ${GREEN}accepted${NC}"
+    fi
+    echo ""
+
+    if [ -f "$conf" ] && [ -s "$conf" ]; then
+        echo -e "${GREEN}✓ Filter ACTIVE - Allowed countries:${NC}"
+        while IFS= read -r line; do
+            [ -n "$line" ] && [[ ! "$line" =~ ^# ]] && [[ ! "$line" =~ ^BLOCK_UNKNOWN= ]] && echo "  • $line"
+        done < "$conf"
+        echo ""
+    else
+        echo -e "${YELLOW}⚠ Filter INACTIVE - All countries allowed${NC}"
+        echo ""
+    fi
+
+    echo -e "${CYAN}Options:${NC}"
+    echo "  1. Edit whitelist (nano)"
+    echo "  2. Add country to whitelist"
+    echo "  3. Clear whitelist (allow all)"
+    echo "  4. View blocked IPs log"
+    echo "  5. Clear ipset blocklist"
+    echo "  6. Unknown IPs: accept (default) / block"
+    echo "  7. Refresh GeoIP cache (re-resolve Unknown IPs via API)"
+    echo "  8. Trim / clear blocked IPs log (storage)"
+    echo "  0. Cancel"
+    echo ""
+    read -p "Choice: " choice < /dev/tty || return
+
+    case "$choice" in
+        1)
+            echo ""
+            if command -v nano &>/dev/null; then
+                nano "$conf" </dev/tty >/dev/tty 2>&1
+            else
+                ${EDITOR:-vi} "$conf" </dev/tty >/dev/tty 2>&1
+            fi
+            echo ""
+            echo "Restarting tracker to apply changes..."
+            systemctl restart conduit-tracker 2>/dev/null || true
+            echo -e "${GREEN}✓ Whitelist updated. Tracker restarted.${NC}"
+            echo ""
+            ;;
+        2)
+            echo ""
+            read -p "Country name (case-insensitive, e.g. iran, russia, china): " country < /dev/tty || return
+            if [ -n "$country" ]; then
+                echo "$country" >> "$conf"
+                echo "Restarting tracker to apply changes..."
+                systemctl restart conduit-tracker 2>/dev/null || true
+                echo -e "${GREEN}✓ Added '$country'. Tracker restarted.${NC}"
+            else
+                echo -e "${YELLOW}No country entered.${NC}"
+            fi
+            echo ""
+            ;;
+        3)
+            echo ""
+            read -p "Clear whitelist and allow all countries? (y/n): " confirm < /dev/tty || return
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                rm -f "$conf"
+                systemctl restart conduit-tracker 2>/dev/null || true
+                echo -e "${GREEN}✓ Cleared. All countries allowed. Tracker restarted.${NC}"
+            else
+                echo "Cancelled."
+            fi
+            echo ""
+            ;;
+        4)
+            echo ""
+            if [ -f /opt/conduit/traffic_stats/blocked_ips.log ]; then
+                less /opt/conduit/traffic_stats/blocked_ips.log
+            else
+                echo "No blocked IPs logged yet."
+                echo ""
+            fi
+            ;;
+        5)
+            echo ""
+            if command -v ipset &>/dev/null && ipset list conduit_blocked &>/dev/null 2>&1; then
+                local count=$(ipset list conduit_blocked | grep -c '^[0-9]' || echo 0)
+                if [ "$count" -gt 0 ]; then
+                    ipset flush conduit_blocked
+                    echo -e "${GREEN}✓ Cleared $count blocked IPs from ipset.${NC}"
+                else
+                    echo "ipset blocklist is already empty."
+                fi
+            else
+                echo "ipset conduit_blocked not found or ipset not installed."
+            fi
+            echo ""
+            ;;
+        6)
+            echo ""
+            local block_unknown=no
+            [ -f "$conf" ] && line=$(grep '^BLOCK_UNKNOWN=' "$conf" 2>/dev/null | head -1) && [ -n "$line" ] && block_unknown=$(echo "$line" | cut -d= -f2 | tr -d ' ')
+            [ "$block_unknown" != "yes" ] && block_unknown=no
+            echo "Unknown IPs = IPs without geolocation (e.g. Cloudflare, multicast)."
+            echo "Default: accept (allow). You can switch to block."
+            echo ""
+            if [ "$block_unknown" = "yes" ]; then
+                echo -e "Current: ${RED}Block unknown IPs${NC}"
+                read -p "Switch to ACCEPT unknown IPs? (y/n): " confirm < /dev/tty || return
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    if [ -f "$conf" ]; then
+                        sed -i '/^BLOCK_UNKNOWN=/d' "$conf"
+                        echo "BLOCK_UNKNOWN=no" >> "$conf"
+                    else
+                        echo "BLOCK_UNKNOWN=no" > "$conf"
+                    fi
+                    echo -e "${GREEN}✓ Unknown IPs will be ACCEPTED. Tracker restarted.${NC}"
+                    systemctl restart conduit-tracker 2>/dev/null || true
+                fi
+            else
+                echo -e "Current: ${GREEN}Accept unknown IPs${NC} (default)"
+                read -p "Switch to BLOCK unknown IPs? (y/n): " confirm < /dev/tty || return
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    if [ -f "$conf" ]; then
+                        sed -i '/^BLOCK_UNKNOWN=/d' "$conf"
+                        echo "BLOCK_UNKNOWN=yes" >> "$conf"
+                    else
+                        echo "BLOCK_UNKNOWN=yes" > "$conf"
+                    fi
+                    echo -e "${YELLOW}✓ Unknown IPs will be BLOCKED. Tracker restarted.${NC}"
+                    systemctl restart conduit-tracker 2>/dev/null || true
+                fi
+            fi
+            echo ""
+            ;;
+        7)
+            echo ""
+            local cache_file="/opt/conduit/traffic_stats/geoip_cache"
+            if [ ! -f "$cache_file" ]; then
+                echo "No GeoIP cache file found."
+            else
+                local before=$(wc -l < "$cache_file" 2>/dev/null || echo 0)
+                grep -v '|Unknown$' "$cache_file" > "${cache_file}.tmp" 2>/dev/null && mv "${cache_file}.tmp" "$cache_file"
+                local after=$(wc -l < "$cache_file" 2>/dev/null || echo 0)
+                local removed=$((before - after))
+                echo -e "${GREEN}✓ Removed $removed Unknown IP(s) from cache.${NC}"
+                echo "They will be re-resolved (local DB + ip-api.com) on next traffic."
+                systemctl restart conduit-tracker 2>/dev/null || true
+            fi
+            echo ""
+            ;;
+        8)
+            echo ""
+            local log_file="/opt/conduit/traffic_stats/blocked_ips.log"
+            if [ ! -f "$log_file" ]; then
+                echo "No blocked IPs log yet."
+            else
+                local lines=$(wc -l < "$log_file" 2>/dev/null || echo 0)
+                local size_kb=$(du -k "$log_file" 2>/dev/null | cut -f1)
+                echo "Blocked IPs log: $lines lines (~${size_kb} KB)"
+                echo "Auto-trim: when > 10000 lines, keeps last 5000."
+                echo ""
+                echo "  1. Trim now (keep last 5000 lines)"
+                echo "  2. Clear log entirely"
+                echo "  0. Cancel"
+                read -p "Choice: " sub < /dev/tty || return
+                case "$sub" in
+                    1)
+                        if [ "$lines" -gt 5000 ]; then
+                            tail -n 5000 "$log_file" > "${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
+                            echo -e "${GREEN}✓ Trimmed to last 5000 lines.${NC}"
+                        else
+                            echo "Log has $lines lines (no trim needed)."
+                        fi
+                        ;;
+                    2)
+                        read -p "Clear entire log? (y/n): " confirm < /dev/tty || return
+                        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                            : > "$log_file"
+                            echo -e "${GREEN}✓ Log cleared.${NC}"
+                        fi
+                        ;;
+                    *) echo "Cancelled." ;;
+                esac
+            fi
+            echo ""
+            ;;
+        0|"")
+            echo "Cancelled."
+            echo ""
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid choice.${NC}"
+            echo ""
+            ;;
+    esac
 }
 
 show_menu() {
@@ -3895,6 +4217,7 @@ show_help() {
     echo "  scale     Scale containers (1-5)"
     echo "  backup    Backup Conduit node identity key"
     echo "  restore   Restore Conduit node identity from backup"
+    echo "  filter    Configure country whitelist (allow only specific countries)"
     echo "  uninstall Remove everything (container, data, service)"
     echo "  menu      Open interactive menu (default)"
     echo "  version   Show version information"
@@ -4300,6 +4623,7 @@ case "${1:-menu}" in
     backup)   backup_key ;;
     restore)  restore_key ;;
     scale)    manage_containers ;;
+    filter)   configure_country_filter ;;
     about)    show_about ;;
     uninstall) uninstall_all ;;
     version|-v|--version) show_version ;;
