@@ -1544,6 +1544,8 @@ LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="s
 # Country filter: whitelist file and blocked-IP log
 ALLOWED_COUNTRIES_FILE="$PERSIST_DIR/../allowed_countries.conf"
 BLOCKED_LOG="$PERSIST_DIR/blocked_ips.log"
+BLOCKED_LOG_MAX_LINES=10000
+BLOCKED_LOG_KEEP_LINES=5000
 
 load_whitelist() {
     if [ ! -f "$ALLOWED_COUNTRIES_FILE" ]; then
@@ -1651,6 +1653,14 @@ process_batch() {
             fi
         fi
     done < "$PERSIST_DIR/batch_ips"
+
+    # Rotate blocked_ips.log if too large (avoid unbounded storage)
+    if [ -f "$BLOCKED_LOG" ]; then
+        local log_lines=$(wc -l < "$BLOCKED_LOG" 2>/dev/null || echo 0)
+        if [ "$log_lines" -gt "$BLOCKED_LOG_MAX_LINES" ]; then
+            tail -n "$BLOCKED_LOG_KEEP_LINES" "$BLOCKED_LOG" > "${BLOCKED_LOG}.tmp" && mv "${BLOCKED_LOG}.tmp" "$BLOCKED_LOG"
+        fi
+    fi
 
     # Step 2: Single awk pass — merge batch into cumulative_data + write snapshot
     $AWK_BIN -F'|' -v snap="$SNAPSHOT_FILE" '
@@ -3733,6 +3743,7 @@ configure_country_filter() {
     echo "  5. Clear ipset blocklist"
     echo "  6. Unknown IPs: accept (default) / block"
     echo "  7. Refresh GeoIP cache (re-resolve Unknown IPs via API)"
+    echo "  8. Trim / clear blocked IPs log (storage)"
     echo "  0. Cancel"
     echo ""
     read -p "Choice: " choice < /dev/tty || return
@@ -3850,6 +3861,42 @@ configure_country_filter() {
                 echo -e "${GREEN}✓ Removed $removed Unknown IP(s) from cache.${NC}"
                 echo "They will be re-resolved (local DB + ip-api.com) on next traffic."
                 systemctl restart conduit-tracker 2>/dev/null || true
+            fi
+            echo ""
+            ;;
+        8)
+            echo ""
+            local log_file="/opt/conduit/traffic_stats/blocked_ips.log"
+            if [ ! -f "$log_file" ]; then
+                echo "No blocked IPs log yet."
+            else
+                local lines=$(wc -l < "$log_file" 2>/dev/null || echo 0)
+                local size_kb=$(du -k "$log_file" 2>/dev/null | cut -f1)
+                echo "Blocked IPs log: $lines lines (~${size_kb} KB)"
+                echo "Auto-trim: when > 10000 lines, keeps last 5000."
+                echo ""
+                echo "  1. Trim now (keep last 5000 lines)"
+                echo "  2. Clear log entirely"
+                echo "  0. Cancel"
+                read -p "Choice: " sub < /dev/tty || return
+                case "$sub" in
+                    1)
+                        if [ "$lines" -gt 5000 ]; then
+                            tail -n 5000 "$log_file" > "${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
+                            echo -e "${GREEN}✓ Trimmed to last 5000 lines.${NC}"
+                        else
+                            echo "Log has $lines lines (no trim needed)."
+                        fi
+                        ;;
+                    2)
+                        read -p "Clear entire log? (y/n): " confirm < /dev/tty || return
+                        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                            : > "$log_file"
+                            echo -e "${GREEN}✓ Log cleared.${NC}"
+                        fi
+                        ;;
+                    *) echo "Cancelled." ;;
+                esac
             fi
             echo ""
             ;;
