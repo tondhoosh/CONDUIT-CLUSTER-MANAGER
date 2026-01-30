@@ -3668,7 +3668,7 @@ telegram_build_report() {
     local total=$CONTAINER_COUNT
     if [ "$running_count" -gt 0 ]; then
         local earliest_start=""
-        for i in $(seq 1 $CONTAINER_COUNT); do
+        for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
             local cname=$(get_container_name $i)
             local started=$(docker inspect --format='{{.State.StartedAt}}' "$cname" 2>/dev/null | cut -d'.' -f1)
             if [ -n "$started" ]; then
@@ -3695,21 +3695,32 @@ telegram_build_report() {
     report+="📦 Containers: ${running_count}/${total} running"
     report+=$'\n'
 
-    # Uptime percentage from uptime_log
+    # Uptime percentage + streak
     local uptime_log="$INSTALL_DIR/traffic_stats/uptime_log"
     if [ -s "$uptime_log" ]; then
-        local total_entries=$(wc -l < "$uptime_log" 2>/dev/null || echo 0)
-        local up_entries=$(awk -F'|' '$2+0>0' "$uptime_log" 2>/dev/null | wc -l)
-        if [ "$total_entries" -gt 0 ] 2>/dev/null; then
-            local uptime_pct=$(awk "BEGIN {printf \"%.1f\", ($up_entries/$total_entries)*100}" 2>/dev/null || echo "0")
-            report+="📈 Availability: ${uptime_pct}% (last ${total_entries}m)"
+        local cutoff_24h=$(( $(date +%s) - 86400 ))
+        local t24=$(awk -F'|' -v c="$cutoff_24h" '$1+0>=c' "$uptime_log" 2>/dev/null | wc -l)
+        local u24=$(awk -F'|' -v c="$cutoff_24h" '$1+0>=c && $2+0>0' "$uptime_log" 2>/dev/null | wc -l)
+        if [ "${t24:-0}" -gt 0 ] 2>/dev/null; then
+            local avail_24h=$(awk "BEGIN {printf \"%.1f\", ($u24/$t24)*100}" 2>/dev/null || echo "0")
+            report+="📈 Availability: ${avail_24h}% (24h)"
+            report+=$'\n'
+        fi
+        # Streak: consecutive minutes at end of log with running > 0
+        local streak_mins=$(awk -F'|' '{a[NR]=$2+0} END{n=0; for(i=NR;i>=1;i--){if(a[i]<=0) break; n++} print n}' "$uptime_log" 2>/dev/null)
+        if [ "${streak_mins:-0}" -gt 0 ] 2>/dev/null; then
+            local sd=$((streak_mins / 1440)) sh=$(( (streak_mins % 1440) / 60 )) sm=$((streak_mins % 60))
+            local streak_str=""
+            [ "$sd" -gt 0 ] && streak_str+="${sd}d "
+            streak_str+="${sh}h ${sm}m"
+            report+="🔥 Streak: ${streak_str}"
             report+=$'\n'
         fi
     fi
 
     # Connected peers (use awk like show_status does)
     local total_peers=0
-    for i in $(seq 1 $CONTAINER_COUNT); do
+    for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
         local cname=$(get_container_name $i)
         local last_stat=$(docker logs --tail 50 "$cname" 2>&1 | grep "\[STATS\]" | tail -1)
         local peers=$(echo "$last_stat" | awk '{for(j=1;j<=NF;j++){if($j=="Connected:") print $(j+1)+0}}' | head -1)
@@ -3730,7 +3741,7 @@ telegram_build_report() {
     report+=$'\n'
 
     # Data usage
-    if [ "$DATA_CAP_GB" -gt 0 ] 2>/dev/null; then
+    if [ "${DATA_CAP_GB:-0}" -gt 0 ] 2>/dev/null; then
         local usage=$(get_data_usage 2>/dev/null)
         local used_rx=$(echo "$usage" | awk '{print $1}')
         local used_tx=$(echo "$usage" | awk '{print $2}')
@@ -3740,13 +3751,45 @@ telegram_build_report() {
         report+=$'\n'
     fi
 
+    # Container restart counts
+    local total_restarts=0
+    local restart_details=""
+    for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
+        local cname=$(get_container_name $i)
+        local rc=$(docker inspect --format='{{.RestartCount}}' "$cname" 2>/dev/null || echo 0)
+        rc=${rc:-0}
+        total_restarts=$((total_restarts + rc))
+        [ "$rc" -gt 0 ] && restart_details+=" C${i}:${rc}"
+    done
+    if [ "$total_restarts" -gt 0 ]; then
+        report+="🔄 Restarts: ${total_restarts}${restart_details}"
+        report+=$'\n'
+    fi
+
+    # Top countries by connected peers (from tracker snapshot)
+    local snap_file_peers="$INSTALL_DIR/traffic_stats/tracker_snapshot"
+    if [ -s "$snap_file_peers" ]; then
+        local top_peers
+        top_peers=$(awk -F'|' '{if($2!="") cnt[$2]++} END{for(c in cnt) print cnt[c]"|"c}' "$snap_file_peers" 2>/dev/null | sort -t'|' -k1 -nr | head -3)
+        if [ -n "$top_peers" ]; then
+            report+="🗺 Top by peers:"
+            report+=$'\n'
+            while IFS='|' read -r cnt country; do
+                [ -z "$country" ] && continue
+                local safe_c=$(escape_telegram_markdown "$country")
+                report+="  • ${safe_c}: ${cnt} clients"
+                report+=$'\n'
+            done <<< "$top_peers"
+        fi
+    fi
+
     # Top countries from cumulative_data (field 3 = upload bytes, matching dashboard)
     local data_file="$INSTALL_DIR/traffic_stats/cumulative_data"
     if [ -s "$data_file" ]; then
         local top_countries
         top_countries=$(awk -F'|' '{if($1!="" && $3+0>0) bytes[$1]+=$3+0} END{for(c in bytes) print bytes[c]"|"c}' "$data_file" 2>/dev/null | sort -t'|' -k1 -nr | head -3)
         if [ -n "$top_countries" ]; then
-            report+="🌍 Top countries:"
+            report+="🌍 Top by upload:"
             report+=$'\n'
             while IFS='|' read -r bytes country; do
                 [ -z "$country" ] && continue
@@ -3762,7 +3805,7 @@ telegram_build_report() {
     local snapshot_file="$INSTALL_DIR/traffic_stats/tracker_snapshot"
     if [ -s "$snapshot_file" ]; then
         local active_clients=$(wc -l < "$snapshot_file" 2>/dev/null || echo 0)
-        report+="📡 Unique IPs served: ${active_clients}"
+        report+="📡 Total lifetime IPs served: ${active_clients}"
         report+=$'\n'
     fi
 
@@ -3833,7 +3876,7 @@ get_container_name() {
     if [ "$i" -le 1 ]; then
         echo "conduit"
     else
-        echo "conduit${i}"
+        echo "conduit-${i}"
     fi
 }
 
@@ -4129,10 +4172,98 @@ except Exception:
                 done
                 telegram_send "👥 Peers: ${total_peers} connected"
                 ;;
+            /uptime|/uptime@*)
+                local ut_msg="⏱ *Uptime Report*"
+                ut_msg+=$'\n'
+                for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
+                    local cname=$(get_container_name $i)
+                    local is_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c "^${cname}$" || true)
+                    if [ "${is_running:-0}" -gt 0 ]; then
+                        local started=$(docker inspect --format='{{.State.StartedAt}}' "$cname" 2>/dev/null)
+                        if [ -n "$started" ]; then
+                            local se=$(date -d "$started" +%s 2>/dev/null || echo 0)
+                            local diff=$(( $(date +%s) - se ))
+                            local d=$((diff / 86400)) h=$(( (diff % 86400) / 3600 )) m=$(( (diff % 3600) / 60 ))
+                            ut_msg+="📦 Container ${i}: ${d}d ${h}h ${m}m"
+                        else
+                            ut_msg+="📦 Container ${i}: ⚠ unknown"
+                        fi
+                    else
+                        ut_msg+="📦 Container ${i}: 🔴 stopped"
+                    fi
+                    ut_msg+=$'\n'
+                done
+                local avail=$(calc_uptime_pct 86400)
+                ut_msg+=$'\n'
+                ut_msg+="📈 Availability: ${avail}% (24h)"
+                telegram_send "$ut_msg"
+                ;;
+            /containers|/containers@*)
+                local ct_msg="📦 *Container Status*"
+                ct_msg+=$'\n'
+                local docker_names=$(docker ps --format '{{.Names}}' 2>/dev/null)
+                for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
+                    local cname=$(get_container_name $i)
+                    ct_msg+=$'\n'
+                    if echo "$docker_names" | grep -q "^${cname}$"; then
+                        ct_msg+="C${i} (${cname}): 🟢 Running"
+                        ct_msg+=$'\n'
+                        local logs=$(timeout 5 docker logs --tail 50 "$cname" 2>&1 | grep "\[STATS\]" | tail -1)
+                        if [ -n "$logs" ]; then
+                            local c_cing c_conn c_up c_down
+                            IFS='|' read -r c_cing c_conn c_up c_down <<< $(echo "$logs" | awk '{
+                                cing=0; conn=0; up=""; down=""
+                                for(j=1;j<=NF;j++){
+                                    if($j=="Connecting:") cing=$(j+1)+0
+                                    else if($j=="Connected:") conn=$(j+1)+0
+                                    else if($j=="Up:"){for(k=j+1;k<=NF;k++){if($k=="|"||$k~/Down:/)break; up=up (up?" ":"") $k}}
+                                    else if($j=="Down:"){for(k=j+1;k<=NF;k++){if($k=="|"||$k~/Uptime:/)break; down=down (down?" ":"") $k}}
+                                }
+                                printf "%d|%d|%s|%s", cing, conn, up, down
+                            }')
+                            ct_msg+="  👥 Connected: ${c_conn:-0} | Connecting: ${c_cing:-0}"
+                            ct_msg+=$'\n'
+                            ct_msg+="  ⬆ Up: ${c_up:-N/A}  ⬇ Down: ${c_down:-N/A}"
+                        else
+                            ct_msg+="  ⚠ No stats available yet"
+                        fi
+                    else
+                        ct_msg+="C${i} (${cname}): 🔴 Stopped"
+                    fi
+                    ct_msg+=$'\n'
+                done
+                ct_msg+=$'\n'
+                ct_msg+="/restart\_N  /stop\_N  /start\_N — manage containers"
+                telegram_send "$ct_msg"
+                ;;
+            /restart_*|/stop_*|/start_*)
+                local action="${cmd%%_*}"     # /restart, /stop, or /start
+                action="${action#/}"          # restart, stop, or start
+                local num="${cmd#*_}"
+                num="${num%%@*}"              # strip @botname suffix
+                if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${CONTAINER_COUNT:-1}" ]; then
+                    telegram_send "❌ Invalid container number: ${num}. Use 1-${CONTAINER_COUNT:-1}."
+                else
+                    local cname=$(get_container_name "$num")
+                    if docker "$action" "$cname" >/dev/null 2>&1; then
+                        local emoji="✅"
+                        [ "$action" = "stop" ] && emoji="🛑"
+                        [ "$action" = "start" ] && emoji="🟢"
+                        telegram_send "${emoji} Container ${num} (${cname}): ${action} successful"
+                    else
+                        telegram_send "❌ Failed to ${action} container ${num} (${cname})"
+                    fi
+                fi
+                ;;
             /help|/help@*)
                 telegram_send "📖 *Available Commands*
 /status — Full status report
 /peers — Current peer count
+/uptime — Per-container uptime + 24h availability
+/containers — Per-container status
+/restart\_N — Restart container N
+/stop\_N — Stop container N
+/start\_N — Start container N
 /help — Show this help"
                 ;;
         esac
@@ -4155,14 +4286,20 @@ build_report() {
     report+="📦 Containers: ${running}/${total} running"
     report+=$'\n'
 
-    # Uptime percentage
+    # Uptime percentage + streak
     local uptime_log="$INSTALL_DIR/traffic_stats/uptime_log"
     if [ -s "$uptime_log" ]; then
-        local total_entries=$(wc -l < "$uptime_log" 2>/dev/null || echo 0)
-        local up_entries=$(awk -F'|' '$2+0>0' "$uptime_log" 2>/dev/null | wc -l)
-        if [ "$total_entries" -gt 0 ] 2>/dev/null; then
-            local uptime_pct=$(awk "BEGIN {printf \"%.1f\", ($up_entries/$total_entries)*100}" 2>/dev/null || echo "0")
-            report+="📈 Availability: ${uptime_pct}% (last ${total_entries}m)"
+        local avail_24h=$(calc_uptime_pct 86400)
+        report+="📈 Availability: ${avail_24h}% (24h)"
+        report+=$'\n'
+        # Streak: consecutive minutes at end of log with running > 0
+        local streak_mins=$(awk -F'|' '{a[NR]=$2+0} END{n=0; for(i=NR;i>=1;i--){if(a[i]<=0) break; n++} print n}' "$uptime_log" 2>/dev/null)
+        if [ "${streak_mins:-0}" -gt 0 ] 2>/dev/null; then
+            local sd=$((streak_mins / 1440)) sh=$(( (streak_mins % 1440) / 60 )) sm=$((streak_mins % 60))
+            local streak_str=""
+            [ "$sd" -gt 0 ] && streak_str+="${sd}d "
+            streak_str+="${sh}h ${sm}m"
+            report+="🔥 Streak: ${streak_str}"
             report+=$'\n'
         fi
     fi
@@ -4203,7 +4340,7 @@ build_report() {
     local snapshot_file="$INSTALL_DIR/traffic_stats/tracker_snapshot"
     if [ -s "$snapshot_file" ]; then
         local active_clients=$(wc -l < "$snapshot_file" 2>/dev/null || echo 0)
-        report+="👤 Unique IPs served: ${active_clients}"
+        report+="👤 Total lifetime IPs served: ${active_clients}"
         report+=$'\n'
     fi
 
@@ -4241,13 +4378,45 @@ build_report() {
         report+=$'\n'
     fi
 
-    # Top countries
+    # Container restart counts
+    local total_restarts=0
+    local restart_details=""
+    for i in $(seq 1 ${CONTAINER_COUNT:-1}); do
+        local cname=$(get_container_name $i)
+        local rc=$(docker inspect --format='{{.RestartCount}}' "$cname" 2>/dev/null || echo 0)
+        rc=${rc:-0}
+        total_restarts=$((total_restarts + rc))
+        [ "$rc" -gt 0 ] && restart_details+=" C${i}:${rc}"
+    done
+    if [ "$total_restarts" -gt 0 ]; then
+        report+="🔄 Restarts: ${total_restarts}${restart_details}"
+        report+=$'\n'
+    fi
+
+    # Top countries by connected peers (from tracker snapshot)
+    local snap_file="$INSTALL_DIR/traffic_stats/tracker_snapshot"
+    if [ -s "$snap_file" ]; then
+        local top_peers
+        top_peers=$(awk -F'|' '{if($2!="") cnt[$2]++} END{for(c in cnt) print cnt[c]"|"c}' "$snap_file" 2>/dev/null | sort -t'|' -k1 -nr | head -3)
+        if [ -n "$top_peers" ]; then
+            report+="🗺 Top by peers:"
+            report+=$'\n'
+            while IFS='|' read -r cnt country; do
+                [ -z "$country" ] && continue
+                local safe_c=$(escape_md "$country")
+                report+="  • ${safe_c}: ${cnt} clients"
+                report+=$'\n'
+            done <<< "$top_peers"
+        fi
+    fi
+
+    # Top countries by upload
     local data_file="$INSTALL_DIR/traffic_stats/cumulative_data"
     if [ -s "$data_file" ]; then
         local top_countries
         top_countries=$(awk -F'|' '{if($1!="" && $3+0>0) bytes[$1]+=$3+0} END{for(c in bytes) print bytes[c]"|"c}' "$data_file" 2>/dev/null | sort -t'|' -k1 -nr | head -3)
         if [ -n "$top_countries" ]; then
-            report+="🌍 Top countries:"
+            report+="🌍 Top by upload:"
             report+=$'\n'
             local total_upload=$(awk -F'|' '{s+=$3+0} END{print s+0}' "$data_file" 2>/dev/null)
             while IFS='|' read -r bytes country; do
@@ -5585,37 +5754,8 @@ restore_key() {
     echo -e "  Node ID: ${CYAN}${node_id}${NC}"
 }
 
-update_conduit() {
-    echo -e "${CYAN}═══ UPDATE CONDUIT ═══${NC}"
-    echo ""
-
-    echo "Current image: ${CONDUIT_IMAGE}"
-    echo ""
-
-    # Check for updates by pulling and capture output
-    echo "Checking for updates..."
-    local pull_output
-    pull_output=$(docker pull "$CONDUIT_IMAGE" 2>&1)
-    local pull_status=$?
-    echo "$pull_output"
-
-    if [ $pull_status -ne 0 ]; then
-        echo -e "${RED}Failed to check for updates. Check your internet connection.${NC}"
-        return 1
-    fi
-
-
-    # Check if image was actually updated
-    if echo "$pull_output" | grep -q "Status: Image is up to date"; then
-        echo ""
-        echo -e "${GREEN}Already running the latest version. No update needed.${NC}"
-        return 0
-    fi
-
-    echo ""
+recreate_containers() {
     echo "Recreating container(s) with updated image..."
-
-    # Stop tracker before backup to avoid racing with writes
     stop_tracker_service 2>/dev/null || true
     local persist_dir="$INSTALL_DIR/traffic_stats"
     if [ -s "$persist_dir/cumulative_data" ] || [ -s "$persist_dir/cumulative_ips" ]; then
@@ -5625,13 +5765,10 @@ update_conduit() {
         [ -s "$persist_dir/geoip_cache" ] && cp "$persist_dir/geoip_cache" "$persist_dir/geoip_cache.bak"
         echo -e "${GREEN}✓ Tracker data snapshot saved${NC}"
     fi
-
-    # Remove and recreate all containers
     for i in $(seq 1 $CONTAINER_COUNT); do
         local name=$(get_container_name $i)
         docker rm -f "$name" 2>/dev/null || true
     done
-
     fix_volume_permissions
     for i in $(seq 1 $CONTAINER_COUNT); do
         run_conduit_container $i
@@ -5642,16 +5779,70 @@ update_conduit() {
         fi
     done
     setup_tracker_service 2>/dev/null || true
+}
 
-    # Regenerate Telegram script if enabled (picks up new features)
-    if [ -f "$INSTALL_DIR/settings.conf" ]; then
-        source "$INSTALL_DIR/settings.conf"
-        if [ "$TELEGRAM_ENABLED" = "true" ]; then
-            telegram_generate_notify_script 2>/dev/null || true
-            systemctl restart conduit-telegram 2>/dev/null || true
-            echo -e "${GREEN}✓ Telegram service updated${NC}"
+update_conduit() {
+    echo -e "${CYAN}═══ UPDATE CONDUIT ═══${NC}"
+    echo ""
+
+    # --- Phase 1: Script update ---
+    echo "Checking for script updates..."
+    local update_url="https://raw.githubusercontent.com/SamNet-dev/conduit-manager/beta-releases/conduit.sh"
+    local tmp_script="/tmp/conduit_update_$$.sh"
+
+    if curl -sL --max-time 30 --max-filesize 2097152 -o "$tmp_script" "$update_url" 2>/dev/null; then
+        if grep -q "CONDUIT_IMAGE=" "$tmp_script" && grep -q "create_management_script" "$tmp_script" && bash -n "$tmp_script" 2>/dev/null; then
+            echo -e "${GREEN}✓ Latest script downloaded${NC}"
+            bash "$tmp_script" --update-components
+            local update_status=$?
+            rm -f "$tmp_script"
+            if [ $update_status -eq 0 ]; then
+                echo -e "${GREEN}✓ Management script updated${NC}"
+                echo -e "${GREEN}✓ Tracker service updated${NC}"
+            else
+                echo -e "${RED}Script update failed. Continuing with Docker check...${NC}"
+            fi
+        else
+            echo -e "${RED}Downloaded file doesn't look valid. Skipping script update.${NC}"
+            rm -f "$tmp_script"
+        fi
+    else
+        echo -e "${YELLOW}Could not download latest script. Skipping script update.${NC}"
+        rm -f "$tmp_script"
+    fi
+
+    # --- Phase 2: Docker image update ---
+    echo ""
+    echo "Checking for Docker image updates..."
+    local pull_output
+    pull_output=$(docker pull "$CONDUIT_IMAGE" 2>&1)
+    local pull_status=$?
+    echo "$pull_output"
+
+    if [ $pull_status -ne 0 ]; then
+        echo -e "${RED}Failed to check for Docker updates. Check your internet connection.${NC}"
+        echo ""
+        echo -e "${GREEN}Script update complete.${NC}"
+        return 1
+    fi
+
+    if echo "$pull_output" | grep -q "Status: Image is up to date"; then
+        echo -e "${GREEN}Docker image is already up to date.${NC}"
+    elif echo "$pull_output" | grep -q "Downloaded newer image\|Pull complete"; then
+        echo ""
+        echo -e "${YELLOW}A new Docker image is available.${NC}"
+        echo -e "Recreating containers will cause brief downtime (~10 seconds)."
+        echo ""
+        read -p "Recreate containers with new image now? [y/N]: " answer < /dev/tty || true
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            recreate_containers
+        else
+            echo -e "${CYAN}Skipped. Containers will use the new image on next restart.${NC}"
         fi
     fi
+
+    echo ""
+    echo -e "${GREEN}Update complete.${NC}"
 }
 
 case "${1:-menu}" in
@@ -5843,6 +6034,22 @@ main() {
         --reinstall)
             # Force reinstall
             FORCE_REINSTALL=true
+            ;;
+        --update-components)
+            # Called by menu update to regenerate scripts without touching containers
+            INSTALL_DIR="/opt/conduit"
+            [ -f "$INSTALL_DIR/settings.conf" ] && source "$INSTALL_DIR/settings.conf"
+            if ! create_management_script; then
+                echo -e "${RED}Failed to update management script${NC}"
+                exit 1
+            fi
+            setup_tracker_service 2>/dev/null || true
+            if [ "$TELEGRAM_ENABLED" = "true" ]; then
+                telegram_generate_notify_script 2>/dev/null || true
+                systemctl restart conduit-telegram 2>/dev/null || true
+                echo -e "${GREEN}✓ Telegram service updated${NC}"
+            fi
+            exit 0
             ;;
     esac
     
