@@ -3644,65 +3644,103 @@ show_settings_menu() {
 configure_country_filter() {
     local conf="/opt/conduit/allowed_countries.conf"
 
-    echo -e "${CYAN}Country Filter Configuration${NC}"
-    echo -e "Block connections from countries NOT in this list."
-    echo -e "Leave empty to allow all countries.\n"
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  COUNTRY FILTER CONFIGURATION${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "Block connections from countries ${BOLD}NOT${NC} in this list."
+    echo -e "Leave empty to allow all countries."
+    echo ""
 
-    if [ -f "$conf" ]; then
-        echo -e "Current whitelist:"
+    if [ -f "$conf" ] && [ -s "$conf" ]; then
+        echo -e "${GREEN}Current whitelist:${NC}"
         cat "$conf"
         echo ""
     else
-        echo -e "Currently: ${GREEN}Allow all countries${NC}\n"
+        echo -e "Currently: ${GREEN}Allow all countries${NC}"
+        echo ""
     fi
 
-    echo "Options:"
+    echo -e "${CYAN}Options:${NC}"
     echo "  1. Edit whitelist (nano)"
     echo "  2. Add country"
     echo "  3. Clear whitelist (allow all)"
     echo "  4. View blocked IPs log"
     echo "  5. Clear ipset blocklist"
-    read -p "Choice: " choice
+    echo "  0. Cancel"
+    echo ""
+    read -p "Choice: " choice < /dev/tty || return
 
     case "$choice" in
         1)
+            echo ""
             if command -v nano &>/dev/null; then
                 nano "$conf"
             else
                 ${EDITOR:-vi} "$conf" 2>/dev/null || vi "$conf"
             fi
+            echo ""
+            echo "Restarting tracker to apply changes..."
             systemctl restart conduit-tracker 2>/dev/null || true
+            echo -e "${GREEN}✓ Whitelist updated. Tracker restarted.${NC}"
+            echo ""
             ;;
         2)
-            read -p "Country name (exact match, e.g. Iran - #FreeIran): " country
+            echo ""
+            read -p "Country name (exact match, e.g. Iran - #FreeIran): " country < /dev/tty || return
             if [ -n "$country" ]; then
                 echo "$country" >> "$conf"
+                echo "Restarting tracker to apply changes..."
                 systemctl restart conduit-tracker 2>/dev/null || true
-                echo -e "${GREEN}Added. Tracker restarted.${NC}"
+                echo -e "${GREEN}✓ Added '$country'. Tracker restarted.${NC}"
+            else
+                echo -e "${YELLOW}No country entered.${NC}"
             fi
+            echo ""
             ;;
         3)
-            rm -f "$conf"
-            systemctl restart conduit-tracker 2>/dev/null || true
-            echo -e "${GREEN}Cleared. Allow all countries.${NC}"
+            echo ""
+            read -p "Clear whitelist and allow all countries? (y/n): " confirm < /dev/tty || return
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                rm -f "$conf"
+                systemctl restart conduit-tracker 2>/dev/null || true
+                echo -e "${GREEN}✓ Cleared. All countries allowed. Tracker restarted.${NC}"
+            else
+                echo "Cancelled."
+            fi
+            echo ""
             ;;
         4)
+            echo ""
             if [ -f /opt/conduit/traffic_stats/blocked_ips.log ]; then
                 less /opt/conduit/traffic_stats/blocked_ips.log
             else
                 echo "No blocked IPs logged yet."
+                echo ""
             fi
             ;;
         5)
-            if command -v ipset &>/dev/null && ipset list conduit_blocked &>/dev/null; then
-                ipset flush conduit_blocked
-                echo -e "${GREEN}Blocklist cleared.${NC}"
+            echo ""
+            if command -v ipset &>/dev/null && ipset list conduit_blocked &>/dev/null 2>&1; then
+                local count=$(ipset list conduit_blocked | grep -c '^[0-9]' || echo 0)
+                if [ "$count" -gt 0 ]; then
+                    ipset flush conduit_blocked
+                    echo -e "${GREEN}✓ Cleared $count blocked IPs from ipset.${NC}"
+                else
+                    echo "ipset blocklist is already empty."
+                fi
             else
-                echo "ipset conduit_blocked not found or empty."
+                echo "ipset conduit_blocked not found or ipset not installed."
             fi
+            echo ""
+            ;;
+        0|"")
+            echo "Cancelled."
+            echo ""
             ;;
         *)
-            echo "No action."
+            echo -e "${YELLOW}Invalid choice.${NC}"
+            echo ""
             ;;
     esac
 }
