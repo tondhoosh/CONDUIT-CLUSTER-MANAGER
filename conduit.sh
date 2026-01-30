@@ -1673,12 +1673,10 @@ process_batch() {
             if (c == "") c = "Unknown"
             if (dir == "FROM") from_bytes[c] += bytes
             else to_bytes[c] += bytes
-            # Also collect snapshot lines
             print dir "|" c "|" bytes "|" ip > snap
             next
         }
         END {
-            # Merge existing + new
             for (c in existing) {
                 split(existing[c], v, "|")
                 f = v[1] + 0; t = v[2] + 0
@@ -1688,7 +1686,6 @@ process_batch() {
                 delete from_bytes[c]
                 delete to_bytes[c]
             }
-            # New countries not in existing
             for (c in from_bytes) {
                 f = from_bytes[c] + 0
                 t = to_bytes[c] + 0
