@@ -18,6 +18,16 @@
 
 A powerful management tool for deploying and managing Psiphon Conduit nodes on Linux servers. Help users access the open internet during network restrictions.
 
+## Screenshots
+
+| Main Menu | Live Dashboard |
+|:-:|:-:|
+| ![Main Menu](conduit-menu.png) | ![Live Stats](conduit-stats.png) |
+
+| Live Map | Advanced Stats |
+|:-:|:-:|
+| ![Live Map](conduit-live-map.png) | ![Advanced Stats](conduit-advanced-stats.png) |
+
 ## Quick Install
 
 ```bash
@@ -221,6 +231,16 @@ Conduit node operators can earn OAT tokens for contributing to the Psiphon netwo
 # راهنمای فارسی - مدیریت کاندوییت
 
 ابزار قدرتمند برای راه‌اندازی و مدیریت نود سایفون کاندوییت روی سرورهای لینوکس. به کاربران کمک کنید تا در زمان محدودیت‌های اینترنتی به اینترنت آزاد دسترسی داشته باشند.
+
+## تصاویر
+
+| منوی اصلی | داشبورد زنده |
+|:-:|:-:|
+| ![منوی اصلی](conduit-menu.png) | ![آمار زنده](conduit-stats.png) |
+
+| نقشه زنده | آمار پیشرفته |
+|:-:|:-:|
+| ![نقشه زنده](conduit-live-map.png) | ![آمار پیشرفته](conduit-advanced-stats.png) |
 
 ## نصب سریع
 
