@@ -2016,16 +2016,36 @@ show_peers() {
         local dur_sec=$((duration % 60))
         local duration_str=$(printf "%02d:%02d" $dur_min $dur_sec)
 
+        local inner_width=67
+        local title="LIVE PEER TRAFFIC BY COUNTRY"
+        local title_len=${#title}
+        local pad_total=$((inner_width - title_len))
+        [ "$pad_total" -lt 0 ] && pad_total=0
+        local pad_left=$((pad_total / 2))
+        local pad_right=$((pad_total - pad_left))
+
         echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║                    LIVE PEER TRAFFIC BY COUNTRY                   ║"
+        printf "${CYAN}║%*s%s%*s║${NC}\n" "$pad_left" "" "$title" "$pad_right" ""
         echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════╣${NC}"
         if [ -f /tmp/conduit_peers_current ]; then
             # Data is available - show last update time
             local update_time=$(date '+%H:%M:%S')
-            echo -e "║  Last Update: ${update_time}                                    ${GREEN}[LIVE]${NC}  ║"
+            local left_raw="Last Update: ${update_time}"
+            local right_raw="[LIVE]"
+            local left_pad
+            local right_pad
+            left_pad=$(printf "%-56s" "$left_raw")
+            right_pad=$(printf "%7s" "$right_raw")
+            printf "%b║  %b%s%b %b%s%b %b║%b\n" "$CYAN" "" "$left_pad" "$NC" "$GREEN" "$right_pad" "$NC" "$CYAN" "$NC"
         else
             # Waiting for first data capture
-            echo -e "║  Status: ${YELLOW}Initializing...${NC}                                         ║"
+            local left_raw="Status: Initializing..."
+            local right_raw=""
+            local left_pad
+            local right_pad
+            left_pad=$(printf "%-56s" "$left_raw")
+            right_pad=$(printf "%7s" "$right_raw")
+            printf "%b║  %b%s%b %b%s%b %b║%b\n" "$CYAN" "$YELLOW" "$left_pad" "$NC" "" "$right_pad" "$NC" "$CYAN" "$NC"
         fi
         echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
         echo -e ""
