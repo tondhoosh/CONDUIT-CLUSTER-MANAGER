@@ -4077,6 +4077,19 @@ You are running a Psiphon relay node that helps people in censored regions acces
 If a container gets stuck and is auto-restarted, you will receive an immediate alert.
 
 ━━━━━━━━━━━━━━━━━━━━
+🎮 *Available Commands:*
+━━━━━━━━━━━━━━━━━━━━
+/status — Full status report on demand
+/peers — Show connected & connecting clients
+/uptime — Uptime for each container
+/containers — List all containers with status
+/start\_N — Start container N (e.g. /start\_1)
+/stop\_N — Stop container N (e.g. /stop\_2)
+/restart\_N — Restart container N (e.g. /restart\_1)
+
+Replace N with the container number (1-5).
+
+━━━━━━━━━━━━━━━━━━━━
 📊 *Your first report:*
 ━━━━━━━━━━━━━━━━━━━━
 
