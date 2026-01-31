@@ -10,13 +10,23 @@
                       M A N A G E R
 ```
 
-![Version](https://img.shields.io/badge/version-1.1-blue)
+![Version](https://img.shields.io/badge/version-1.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange)
 ![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-Script-4EAA25?logo=gnubash&logoColor=white)
 
 A powerful management tool for deploying and managing Psiphon Conduit nodes on Linux servers. Help users access the open internet during network restrictions.
+
+## Screenshots
+
+| Main Menu | Live Dashboard |
+|:-:|:-:|
+| ![Main Menu](conduit-menu.png) | ![Live Stats](conduit-stats.png) |
+
+| Live Map | Advanced Stats |
+|:-:|:-:|
+| ![Live Map](conduit-live-map.png) | ![Advanced Stats](conduit-advanced-stats.png) |
 
 ## Quick Install
 
@@ -31,18 +41,17 @@ wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.s
 sudo bash conduit.sh
 ```
 
-## What's New in v1.1
+## What's New in v1.2
 
-- **Multi-Container Support** — Run up to 5 Conduit containers on a single server for higher throughput
-- **Background Traffic Tracker** — Continuous tcpdump-based tracker service with per-country GeoIP stats
-- **Advanced Stats Page** — Live dashboard with top countries by peers, download, upload, and unique IPs (bar charts, auto-refresh)
-- **Live Dashboard Overhaul** — Side-by-side active clients and top upload by country with real-time bars
-- **Per-Container Settings** — Configure max-clients and bandwidth individually for each container
-- **Container Manager** — Add or remove containers on the fly with auto-refreshing status view
-- **Smart Install** — Detects CPU cores and RAM, recommends container count for your hardware
-- **Info & Help Hub** — Multi-page guide covering the tracker, stats, containers, privacy, and about
-- **Service Auto-Recovery** — Automatically restarts failed conduit.service on script launch
-- **Seamless Upgrade** — Existing v1.0.x users can run the new script without reinstalling; old containers are recognized automatically
+- **Per-Container Resource Limits** — Set CPU and memory limits per container via Settings menu with smart defaults
+- **Telegram Bot Integration** — Periodic status reports, alerts, and commands (`/status`, `/peers`, `/uptime`, `/containers`, `/restart_N`, `/stop_N`, `/start_N`)
+- **Systemd Notification Service** — Telegram bot runs as a systemd service, survives reboots and TUI exits
+- **Performance Overhaul** — Parallelized docker commands across all TUI screens, reduced refresh from ~10s to ~2-3s
+- **Compact Number Display** — Large counts show as 16.5K, 1.2M
+- **Active Clients Count** — Connected and connecting peers in dashboard and Telegram reports
+- **Atomic Config Writes** — Settings file writes are now crash-safe
+- **Secure Temp Directories** — All temp dirs use `mktemp` for secure random names
+- **20+ Bug Fixes** — TUI stability, health check edge cases, Telegram escaping, peer count consistency, and more
 
 ## Features
 
@@ -54,12 +63,14 @@ sudo bash conduit.sh
 - **Advanced Stats** — Top countries by connected peers, download, upload, and unique IPs with bar charts
 - **Live Peer Traffic** — Real-time traffic table by country with speed, total bytes, and IP/client counts
 - **Background Tracker** — Continuous traffic monitoring via systemd service with GeoIP resolution
-- **Per-Container Settings** — Configure max-clients and bandwidth per container
+- **Telegram Bot** — On-demand `/status`, `/peers`, `/uptime`, `/containers` and remote container management via Telegram
+- **Per-Container Settings** — Configure max-clients, bandwidth, CPU, and memory per container
+- **Resource Limits** — Set CPU and memory limits with smart defaults based on system specs
 - **Easy Management** — Powerful CLI commands or interactive menu
 - **Backup & Restore** — Backup and restore your node identity keys
 - **Health Checks** — Comprehensive diagnostics for troubleshooting
 - **Info & Help** — Built-in multi-page guide explaining how everything works
-- **Complete Uninstall** — Clean removal of all components
+- **Complete Uninstall** — Clean removal of all components including Telegram service
 
 ## Supported Distributions
 
@@ -99,7 +110,7 @@ conduit update       # Update to the latest Conduit image
 
 ### Configuration
 ```bash
-conduit settings     # Change max-clients and bandwidth per container
+conduit settings     # Change max-clients, bandwidth, CPU, memory per container
 conduit menu         # Open interactive management menu
 ```
 
@@ -130,7 +141,7 @@ The interactive menu (`conduit menu`) provides access to all features:
 | **6** | Stop Conduit |
 | **7** | Restart Conduit |
 | **8** | Update Conduit image |
-| **9** | Settings & Tools — max-clients, bandwidth, QR code, backup, restore, health check, uninstall |
+| **9** | Settings & Tools — resource limits, QR code, backup, restore, health check, Telegram, uninstall |
 | **c** | Manage containers — add or remove containers (up to 5) |
 | **a** | Advanced stats — top 5 charts for peers, download, upload, unique IPs |
 | **i** | Info & Help — multi-page guide with tracker, stats, containers, privacy, about |
@@ -142,6 +153,8 @@ The interactive menu (`conduit menu`) provides access to all features:
 |--------|---------|-------|-------------|
 | `max-clients` | 200 | 1–1000 | Maximum concurrent proxy clients per container |
 | `bandwidth` | 5 | 1–40, -1 | Bandwidth limit per peer (Mbps). Use -1 for unlimited. |
+| `cpu` | Unlimited | 0.1–N cores | CPU limit per container (e.g. 1.0 = one core) |
+| `memory` | Unlimited | 64m–system RAM | Memory limit per container (e.g. 256m, 1g) |
 
 **Recommended values based on server hardware:**
 
@@ -168,9 +181,9 @@ sudo bash conduit.sh --uninstall
 sudo bash conduit.sh --help
 ```
 
-## Upgrading from v1.0.x
+## Upgrading
 
-Just run the new script. When prompted, select **"Open management menu"** — your existing container is recognized automatically. No reinstall needed. The background tracker service starts when you next start/restart from the menu.
+Just run the install command above or use `conduit update` from the menu. Existing containers are recognized automatically. Telegram settings and node identity keys are preserved across upgrades.
 
 ## Requirements
 
@@ -193,7 +206,7 @@ Just run the new script. When prompted, select **"Open management menu"** — yo
 
 Conduit node operators can earn OAT tokens for contributing to the Psiphon network. To claim rewards:
 
-1. **Install the Ryve app** on your phone 
+1. **Install the Ryve app** on your phone
 2. **Create a crypto wallet** within the app
 3. **Link your Conduit containers** by scanning the QR code:
    - From the menu: Select Settings & Tools **Option 6 → Show QR Code & Conduit ID**
@@ -209,6 +222,7 @@ Conduit node operators can earn OAT tokens for contributing to the Psiphon netwo
 - **Secure Backups**: Node identity keys are stored with restricted permissions (600)
 - **No Telemetry**: The manager collects no data and sends nothing externally
 - **Local Tracking Only**: Traffic stats are stored locally and never transmitted
+- **Telegram Optional**: Bot notifications are opt-in only, zero resources used if disabled
 
 ---
 
@@ -217,6 +231,16 @@ Conduit node operators can earn OAT tokens for contributing to the Psiphon netwo
 # راهنمای فارسی - مدیریت کاندوییت
 
 ابزار قدرتمند برای راه‌اندازی و مدیریت نود سایفون کاندوییت روی سرورهای لینوکس. به کاربران کمک کنید تا در زمان محدودیت‌های اینترنتی به اینترنت آزاد دسترسی داشته باشند.
+
+## تصاویر
+
+| منوی اصلی | داشبورد زنده |
+|:-:|:-:|
+| ![منوی اصلی](conduit-menu.png) | ![آمار زنده](conduit-stats.png) |
+
+| نقشه زنده | آمار پیشرفته |
+|:-:|:-:|
+| ![نقشه زنده](conduit-live-map.png) | ![آمار پیشرفته](conduit-advanced-stats.png) |
 
 ## نصب سریع
 
@@ -233,35 +257,35 @@ wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/main/conduit.s
 sudo bash conduit.sh
 ```
 
-## تازه‌های نسخه 1.1
+## تازه‌های نسخه 1.2
 
-- **پشتیبانی از چند کانتینر** — اجرای تا ۵ کانتینر روی یک سرور برای ظرفیت بیشتر
-- **ردیاب ترافیک پس‌زمینه** — سرویس ردیابی مداوم با آمار جغرافیایی به تفکیک کشور
-- **صفحه آمار پیشرفته** — داشبورد زنده با نمودار میله‌ای برای برترین کشورها
-- **داشبورد بازطراحی شده** — نمایش کلاینت‌های فعال و آپلود برتر به تفکیک کشور
-- **تنظیمات هر کانتینر** — پیکربندی جداگانه حداکثر کاربران و پهنای باند
-- **مدیریت کانتینرها** — اضافه یا حذف کانتینر به صورت آنی
-- **نصب هوشمند** — تشخیص CPU و RAM و پیشنهاد تعداد کانتینر مناسب
-- **بخش راهنما** — راهنمای چندصفحه‌ای شامل ردیاب، آمار، کانتینرها، حریم خصوصی و درباره ما
-- **بازیابی خودکار سرویس** — ریستارت خودکار سرویس در صورت خرابی
-- **ارتقا بدون نصب مجدد** — کاربران نسخه قبلی بدون نیاز به نصب مجدد می‌توانند آپدیت کنند
+- **محدودیت منابع هر کانتینر** — تنظیم محدودیت CPU و حافظه برای هر کانتینر با پیش‌فرض‌های هوشمند
+- **ربات تلگرام** — گزارش‌های دوره‌ای، هشدارها و دستورات (`/status`، `/peers`، `/uptime`، `/containers`، `/restart_N`، `/stop_N`، `/start_N`)
+- **سرویس اعلان سیستمی** — ربات تلگرام به عنوان سرویس systemd اجرا می‌شود و پس از ریستارت سرور فعال می‌ماند
+- **بهبود عملکرد** — دستورات داکر به صورت موازی اجرا شده، زمان رفرش از ~۱۰ ثانیه به ~۲-۳ ثانیه کاهش یافته
+- **نمایش فشرده اعداد** — اعداد بزرگ به صورت 16.5K و 1.2M نمایش داده می‌شوند
+- **شمارش کلاینت‌های فعال** — تعداد متصل و در حال اتصال در داشبورد و گزارش تلگرام
+- **ذخیره امن تنظیمات** — نوشتن فایل تنظیمات به صورت اتمیک برای جلوگیری از خرابی
+- **۲۰+ رفع باگ** — پایداری رابط کاربری، بررسی سلامت، فرمت تلگرام، هماهنگی تعداد کاربران و موارد دیگر
 
 ## ویژگی‌ها
 
 - **نصب با یک کلیک** — داکر و تمام موارد مورد نیاز به صورت خودکار نصب می‌شود
 - **مقیاس‌پذیری چند کانتینره** — اجرای ۱ تا ۵ کانتینر برای حداکثر استفاده از سرور
-- **پشتیبانی از توزیع‌های مختلف** — اوبونتو، دبیان، سنت‌اواس، فدورا، آرچ، آلپاین
+- **پشتیبانی از توزیع‌های مختلف** — اوبونتو، دبیان، سنت‌اواس، فدورا، آرچ، آلپاین، اوپن‌سوزه
 - **راه‌اندازی خودکار** — پس از ریستارت سرور، سرویس به صورت خودکار اجرا می‌شود
 - **داشبورد زنده** — نمایش لحظه‌ای وضعیت، تعداد کاربران، مصرف CPU و RAM
 - **آمار پیشرفته** — نمودار میله‌ای برترین کشورها بر اساس اتصال، دانلود، آپلود و IP
 - **مانیتورینگ ترافیک** — جدول لحظه‌ای ترافیک بر اساس کشور با سرعت و تعداد کلاینت
 - **ردیاب پس‌زمینه** — سرویس ردیابی مداوم ترافیک با تشخیص جغرافیایی
-- **تنظیمات هر کانتینر** — پیکربندی حداکثر کاربران و پهنای باند برای هر کانتینر
+- **ربات تلگرام** — دستورات `/status`، `/peers`، `/uptime`، `/containers` و مدیریت کانتینر از راه دور (اختیاری)
+- **تنظیمات هر کانتینر** — پیکربندی حداکثر کاربران، پهنای باند، CPU و حافظه برای هر کانتینر
+- **محدودیت منابع** — تنظیم محدودیت CPU و حافظه با پیش‌فرض‌های هوشمند
 - **مدیریت آسان** — دستورات قدرتمند CLI یا منوی تعاملی
 - **پشتیبان‌گیری و بازیابی** — پشتیبان‌گیری و بازیابی کلیدهای هویت نود
 - **بررسی سلامت** — تشخیص جامع برای عیب‌یابی
 - **راهنما و اطلاعات** — راهنمای چندصفحه‌ای داخلی
-- **حذف کامل** — پاکسازی تمام فایل‌ها و تنظیمات
+- **حذف کامل** — پاکسازی تمام فایل‌ها و تنظیمات شامل سرویس تلگرام
 
 ## دستورات CLI
 
@@ -317,8 +341,8 @@ conduit help         # راهنما
 | **5** | شروع کاندوییت |
 | **6** | توقف کاندوییت |
 | **7** | ریستارت کاندوییت |
-| **8** | به‌روزرسانی ایمیج |
-| **9** | تنظیمات و ابزارها — پهنای باند، QR کد، پشتیبان‌گیری، بازیابی، بررسی سلامت، حذف نصب |
+| **8** | به‌روزرسانی ایمیج و اسکریپت |
+| **9** | تنظیمات و ابزارها — محدودیت منابع، QR کد، پشتیبان‌گیری، بازیابی، تلگرام، حذف نصب |
 | **c** | مدیریت کانتینرها — اضافه یا حذف (تا ۵) |
 | **a** | آمار پیشرفته — نمودار برترین کشورها |
 | **i** | راهنما — توضیحات ردیاب، آمار، کانتینرها، حریم خصوصی |
@@ -330,6 +354,8 @@ conduit help         # راهنما
 |-------|---------|--------|---------|
 | `max-clients` | 200 | ۱–۱۰۰۰ | حداکثر کاربران همزمان برای هر کانتینر |
 | `bandwidth` | 5 | ۱–۴۰ یا ۱- | محدودیت پهنای باند (Mbps). برای نامحدود ۱- وارد کنید. |
+| `cpu` | نامحدود | 0.1–N هسته | محدودیت CPU هر کانتینر (مثلاً 1.0 = یک هسته) |
+| `memory` | نامحدود | 64m–حافظه سیستم | محدودیت حافظه هر کانتینر (مثلاً 256m، 1g) |
 
 **مقادیر پیشنهادی بر اساس سخت‌افزار سرور:**
 
@@ -340,9 +366,25 @@ conduit help         # راهنما
 | ۴ هسته | ۴ گیگ+ | ۲–۳ | ۴۰۰ |
 | ۸+ هسته | ۸ گیگ+ | ۳–۵ | ۸۰۰ |
 
-## ارتقا از نسخه 1.0.x
+## گزینه‌های نصب
 
-فقط اسکریپت جدید را اجرا کنید. وقتی سوال پرسیده شد، گزینه **«Open management menu»** را انتخاب کنید. کانتینر موجود شما به صورت خودکار شناسایی می‌شود. نیازی به نصب مجدد نیست.
+```bash
+# نصب استاندارد
+sudo bash conduit.sh
+
+# نصب مجدد اجباری
+sudo bash conduit.sh --reinstall
+
+# حذف کامل
+sudo bash conduit.sh --uninstall
+
+# نمایش راهنما
+sudo bash conduit.sh --help
+```
+
+## ارتقا از نسخه‌های قبلی
+
+فقط دستور نصب بالا را اجرا کنید یا از منو گزینه `conduit update` را بزنید. کانتینرهای موجود به صورت خودکار شناسایی می‌شوند. تنظیمات تلگرام و کلیدهای هویت نود در به‌روزرسانی حفظ می‌شوند.
 
 ## پیش‌نیازها
 
@@ -381,6 +423,7 @@ conduit help         # راهنما
 - **پشتیبان‌گیری امن**: کلیدهای هویت نود با دسترسی محدود (600) ذخیره می‌شوند
 - **بدون تلمتری**: هیچ داده‌ای جمع‌آوری یا ارسال نمی‌شود
 - **ردیابی محلی**: آمار ترافیک فقط به صورت محلی ذخیره شده و هرگز ارسال نمی‌شود
+- **تلگرام اختیاری**: اعلان‌های ربات کاملاً اختیاری هستند و در صورت غیرفعال بودن هیچ منبعی مصرف نمی‌شود
 
 </div>
 
