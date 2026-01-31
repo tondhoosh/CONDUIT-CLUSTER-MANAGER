@@ -2642,8 +2642,13 @@ show_status() {
     # Check for systemd
     if command -v systemctl &>/dev/null && systemctl is-enabled conduit.service 2>/dev/null | grep -q "enabled"; then
         echo -e "  Auto-start:   ${GREEN}Enabled (systemd)${NC}${EL}"
-        local svc_status=$(systemctl is-active conduit.service 2>/dev/null)
-        echo -e "  Service:      ${svc_status:-unknown}${EL}"
+        # Show service based on actual container state (systemd oneshot status is unreliable)
+        local svc_containers=$(docker ps --filter "name=^conduit" --format '{{.Names}}' 2>/dev/null | wc -l)
+        if [ "${svc_containers:-0}" -gt 0 ] 2>/dev/null; then
+            echo -e "  Service:      ${GREEN}active${NC}${EL}"
+        else
+            echo -e "  Service:      ${YELLOW}inactive${NC}${EL}"
+        fi
     # Check for OpenRC
     elif command -v rc-status &>/dev/null && rc-status -a 2>/dev/null | grep -q "conduit"; then
         echo -e "  Auto-start:   ${GREEN}Enabled (OpenRC)${NC}${EL}"
@@ -2883,10 +2888,6 @@ restart_conduit() {
     fi
     # Regenerate tracker script and ensure service is running
     setup_tracker_service 2>/dev/null || true
-    # Sync systemd service state so dashboard shows "active"
-    if command -v systemctl &>/dev/null && systemctl is-enabled conduit.service &>/dev/null; then
-        systemctl restart conduit.service 2>/dev/null || true
-    fi
 }
 
 change_settings() {
