@@ -1,3 +1,7 @@
+WORK IN PROGRES - NOT READY YET 
+
+
+
 # Conduit Manager
 
 A powerful management tool for deploying and managing Psiphon Conduit nodes on Linux servers. Help users access the open internet during network restrictions.
