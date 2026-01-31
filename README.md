@@ -133,7 +133,7 @@ sudo bash conduit.sh --help
 - Docker runs via Docker Desktop (installed via Homebrew cask when needed)
 - Host networking is not available on Docker Desktop; ports 443/TCP+UDP are published
 - Auto-start is not configured on macOS (launchd not implemented)
-- Peers-by-country requires a MaxMind GeoLite2 license key (prompted during install)
+- Peers-by-country uses the free DB-IP Lite MMDB database (no account required)
 - `conduit peers` requires sudo on macOS due to `tcpdump`
 
 ## How It Works
@@ -304,7 +304,7 @@ sudo conduit peers
 - داکر از طریق Docker Desktop اجرا می‌شود
 - به‌جای Host Networking، پورت‌های 443/TCP و 443/UDP منتشر می‌شوند
 - راه‌اندازی خودکار روی macOS تنظیم نمی‌شود (launchd اضافه نشده)
-- نمایش کشورها نیاز به کلید MaxMind GeoLite2 دارد (در نصب پرسیده می‌شود)
+- نمایش کشورها از دیتابیس رایگان DB-IP Lite استفاده می‌کند (نیاز به حساب ندارد)
 - دستور `conduit peers` روی macOS نیاز به sudo دارد (tcpdump)
 
 </div>
