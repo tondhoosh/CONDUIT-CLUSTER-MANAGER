@@ -5550,17 +5550,48 @@ telegram_setup_wizard() {
 }
 
 show_menu() {
-    # Auto-fix systemd service files: replace hard docker dependency for snap/non-systemd Docker
+    # Auto-fix systemd service files: rewrite stale/old files, single daemon-reload
     if command -v systemctl &>/dev/null; then
         local need_reload=false
-        for svc_file in /etc/systemd/system/conduit.service /etc/systemd/system/conduit-tracker.service; do
-            if [ -f "$svc_file" ] && grep -q "Requires=docker.service" "$svc_file" 2>/dev/null; then
-                sed -i 's/Requires=docker.service/Wants=docker.service/g' "$svc_file"
+
+        # Fix conduit.service if it has old format (Requires, Type=simple, Restart=always, hardcoded args)
+        if [ -f /etc/systemd/system/conduit.service ]; then
+            local need_rewrite=false
+            grep -q "Requires=docker.service" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+            grep -q "Type=simple" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+            grep -q "Restart=always" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+            grep -q "max-clients" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+            if [ "$need_rewrite" = true ]; then
+                cat > /etc/systemd/system/conduit.service << SVCEOF
+[Unit]
+Description=Psiphon Conduit Service
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/conduit start
+ExecStop=/usr/local/bin/conduit stop
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
                 need_reload=true
             fi
-        done
+        fi
+
+        # Fix tracker service file
+        if [ -f /etc/systemd/system/conduit-tracker.service ] && grep -q "Requires=docker.service" /etc/systemd/system/conduit-tracker.service 2>/dev/null; then
+            sed -i 's/Requires=docker.service/Wants=docker.service/g' /etc/systemd/system/conduit-tracker.service
+            need_reload=true
+        fi
+
+        # Single daemon-reload for all file changes
         if [ "$need_reload" = true ]; then
             systemctl daemon-reload 2>/dev/null || true
+            systemctl reset-failed conduit.service 2>/dev/null || true
+            systemctl enable conduit.service 2>/dev/null || true
         fi
 
         # Auto-fix conduit.service if it's in failed state
@@ -5575,12 +5606,14 @@ show_menu() {
     local any_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c "^conduit" 2>/dev/null || true)
     any_running=${any_running:-0}
     if [ "$any_running" -gt 0 ] 2>/dev/null; then
-        # Always regenerate script so upgrades get latest code
+        local tracker_script="$INSTALL_DIR/conduit-tracker.sh"
+        local old_hash=$(md5sum "$tracker_script" 2>/dev/null | awk '{print $1}')
         regenerate_tracker_script
+        local new_hash=$(md5sum "$tracker_script" 2>/dev/null | awk '{print $1}')
         if ! is_tracker_active; then
             setup_tracker_service
-        else
-            # Restart to pick up new script
+        elif [ "$old_hash" != "$new_hash" ]; then
+            # Script changed (upgrade), restart to pick up new code
             systemctl restart conduit-tracker.service 2>/dev/null || true
         fi
     fi
@@ -6562,10 +6595,37 @@ main() {
                 echo -e "${RED}Failed to update management script${NC}"
                 exit 1
             fi
-            # Fix conduit.service: replace hard docker dependency for snap installs
-            if [ -f /etc/systemd/system/conduit.service ] && grep -q "Requires=docker.service" /etc/systemd/system/conduit.service 2>/dev/null; then
-                sed -i 's/Requires=docker.service/Wants=docker.service/g' /etc/systemd/system/conduit.service
-                systemctl daemon-reload 2>/dev/null || true
+            # Rewrite conduit.service to correct format (fixes stale/old service files)
+            if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/conduit.service ]; then
+                local need_rewrite=false
+                # Detect old/mismatched service files
+                grep -q "Requires=docker.service" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+                grep -q "Type=simple" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+                grep -q "Restart=always" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+                grep -q "max-clients" /etc/systemd/system/conduit.service 2>/dev/null && need_rewrite=true
+                if [ "$need_rewrite" = true ]; then
+                    # Overwrite file first, then reload to replace old Restart=always definition
+                    cat > /etc/systemd/system/conduit.service << SVCEOF
+[Unit]
+Description=Psiphon Conduit Service
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/conduit start
+ExecStop=/usr/local/bin/conduit stop
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl stop conduit.service 2>/dev/null || true
+                    systemctl reset-failed conduit.service 2>/dev/null || true
+                    systemctl enable conduit.service 2>/dev/null || true
+                    systemctl start conduit.service 2>/dev/null || true
+                fi
             fi
             setup_tracker_service 2>/dev/null || true
             if [ "$TELEGRAM_ENABLED" = "true" ]; then
