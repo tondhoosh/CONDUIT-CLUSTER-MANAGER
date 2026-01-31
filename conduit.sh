@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║        🚀 PSIPHON CONDUIT MANAGER v1.1.0                          ║
+# ║        🚀 PSIPHON CONDUIT MANAGER v1.0.2-Mac                      ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.1.0"
+VERSION="1.0.2-Mac"
 CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:d8522a8"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 # BACKUP_DIR depends on INSTALL_DIR and may be overridden during OS detection (e.g. macOS).
@@ -372,7 +372,7 @@ check_dependencies() {
                     }
                 fi
 
-                # Ensure GeoLite2 Country DB is present (hard requirement on macOS)
+                # Ensure GeoLite2 Country DB is present (optional unless peers-by-country is used)
                 ensure_geoip_db_macos
                 ;;
             apt) 
@@ -398,7 +398,7 @@ check_dependencies() {
 
 ensure_geoip_db_macos() {
     # Ensure MaxMind GeoLite2 Country DB exists for mmdblookup.
-    # Requires a (free) MaxMind license key for download.
+    # Optional unless peers-by-country is used.
     if [ "$OS_FAMILY" != "macos" ]; then
         return 0
     fi
@@ -422,6 +422,13 @@ ensure_geoip_db_macos() {
     echo -e "  Create account: ${YELLOW}https://www.maxmind.com/en/geolite2/signup${NC}"
     echo -e "  Create license key: ${YELLOW}https://www.maxmind.com/en/accounts/current/license-key${NC}"
     echo ""
+    read -p "Download GeoLite2 Country database now? [y/N] " geoip_confirm < /dev/tty || true
+    if [[ ! "$geoip_confirm" =~ ^[Yy] ]]; then
+        log_warn "Skipping GeoIP database setup."
+        log_info "You can rerun the installer later to enable peers-by-country on macOS."
+        return 0
+    fi
+
     # Hide input for license key (portable)
     printf "Enter your MaxMind license key (required, hidden input): "
     if read -s maxmind_key < /dev/tty 2>/dev/null; then
@@ -436,9 +443,9 @@ ensure_geoip_db_macos() {
 
     if [ -z "$maxmind_key" ]; then
         echo ""
-        log_error "MaxMind license key is required to enable peers-by-country on macOS."
-        log_info "Re-run the script and provide a license key when prompted."
-        exit 1
+        log_warn "No MaxMind license key provided. Skipping GeoIP database setup."
+        log_info "You can rerun the installer later to enable peers-by-country on macOS."
+        return 0
     fi
 
     log_info "Downloading GeoLite2 Country database..."
@@ -789,7 +796,7 @@ ensure_docker_running() {
     fi
 
     # Wait briefly for daemon readiness
-    local retries=60
+    local retries=120
     while ! docker info &>/dev/null && [ $retries -gt 0 ]; do
         sleep 1
         retries=$((retries - 1))
@@ -1087,7 +1094,7 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/tag/d8522a8
 #
 
-VERSION="1.1.0"
+VERSION="1.0.2-Mac"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 GEOIP_DIR="$INSTALL_DIR/geoip"
@@ -1311,9 +1318,30 @@ run_with_timeout() {
         timeout "$seconds" "$@"
     elif command -v gtimeout &>/dev/null; then
         gtimeout "$seconds" "$@"
-    else
+    elif command -v perl &>/dev/null; then
         # Portable fallback using perl alarm
         perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+    elif command -v python3 &>/dev/null; then
+        # Python fallback if perl is unavailable (macOS may not ship perl)
+        python3 -c 'import signal, subprocess, sys
+def handler(signum, frame):
+    raise TimeoutError()
+signal.signal(signal.SIGALRM, handler)
+sec = int(sys.argv[1])
+cmd = sys.argv[2:]
+if not cmd:
+    sys.exit(0)
+signal.alarm(sec)
+try:
+    result = subprocess.run(cmd)
+    signal.alarm(0)
+    sys.exit(result.returncode)
+except TimeoutError:
+    sys.exit(124)
+' "$seconds" "$@"
+    else
+        echo "Error: timeout requires 'timeout', 'gtimeout', 'perl', or 'python3'." >&2
+        return 124
     fi
 }
 
@@ -1657,11 +1685,6 @@ show_peers() {
     tput smcup 2>/dev/null || true
     # Hide cursor for cleaner display
     echo -ne "\033[?25l"
-
-    # On macOS, show one-time GeoIP diagnostics to help resolve "Unknown"
-    if [ $is_darwin -eq 1 ]; then
-        geoip_diag
-    fi
 
     #═══════════════════════════════════════════════════════════════════
     # Main display loop - runs until user presses a key
