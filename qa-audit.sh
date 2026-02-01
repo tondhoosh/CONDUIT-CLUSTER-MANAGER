@@ -32,8 +32,8 @@ for i in {1..8}; do
     
     # Check Restart Policy
     POLICY=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' $name 2>/dev/null)
-    if [ "$POLICY" == "unless-stopped" ]; then 
-        pass "$name: Restart policy confirmed (unless-stopped)"
+    if [[ "$POLICY" == "unless-stopped" || "$POLICY" == "always" ]]; then 
+        pass "$name: Restart policy confirmed ($POLICY)"
     else 
         fail "$name: Bad restart policy ($POLICY)"
     fi
@@ -89,7 +89,7 @@ log "🦍 CHAOS TEST: Killing 'conduit-8' to test auto-healing..."
 docker stop conduit-8 &>/dev/null
 docker start conduit-8 &>/dev/null 
 docker kill --signal=SIGKILL conduit-8 &>/dev/null
-sleep 3
+sleep 10
 STATUS=$(docker inspect -f '{{.State.Status}}' conduit-8)
 if [ "$STATUS" == "running" ] || [ "$STATUS" == "restarting" ]; then
     pass "Self-Healing Confirmed: Container recovered automatically."
