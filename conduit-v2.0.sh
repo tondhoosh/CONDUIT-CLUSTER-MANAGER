@@ -524,16 +524,11 @@ run_conduit_container() {
     # v2.0: Increased file descriptor limits for high concurrency
     docker_cmd="$docker_cmd --ulimit nofile=${CONTAINER_ULIMIT_NOFILE}:${CONTAINER_ULIMIT_NOFILE}"
     
-    # Volume mount
+    # Volume mount - map to /data for persistent keys
     docker_cmd="$docker_cmd -v \"$vname:/data\""
     
-    # Conduit arguments (GHCR image has entrypoint set)
-    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\""
-    docker_cmd="$docker_cmd --max-clients ${MAX_CLIENTS}"
-    
-    if [ "$BANDWIDTH" != "-1" ]; then
-        docker_cmd="$docker_cmd --bandwidth ${BANDWIDTH}"
-    fi
+    # Conduit command: use 'start' subcommand with data directory
+    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" start -d /data"
     
     # Execute
     eval "$docker_cmd"
