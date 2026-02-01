@@ -1,4 +1,4 @@
-# Conduit Manager - High-Performance Cluster Edition v2.2-iran-fix
+# Conduit Manager - High-Performance Cluster Edition v2.4-iran-stable
 
 ```
   ██████╗ ██████╗ ███╗   ██╗██████╗ ██╗   ██╗██╗████████╗
@@ -612,6 +612,11 @@ Copyright (c) 2026 Saman - SamNet
 ---
 
 ## 📜 Changelog
+
+### v2.4-iran-stable (2026-02-01)
+- 🔧 **FIX:** Improved Nginx stream module detection (handles missing symlinks)
+- 🔧 **FIX:** Added manual persistence checking
+- ✨ **NEW:** Interactive menu option (6) automatically fetches mnemonics
 
 ### v2.2-iran-fix (2026-02-01)
 - ✨ **NEW:** Iran-specific MTU optimization (1380)

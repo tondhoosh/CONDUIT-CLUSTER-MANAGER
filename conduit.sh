@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v2.3-iran-fix2                   ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.4-iran-stable                 ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="2.3-iran-fix2"
+VERSION="v2.4-iran-stable"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -794,21 +794,30 @@ generate_nginx_conf() {
     
     # Detect proper module loading method
     local modules_config=""
-    if [ -d "/etc/nginx/modules-enabled" ]; then
-        # Debian/Ubuntu: Use standard include mechanism
+    # Detect proper module loading method
+    local modules_config=""
+    
+    # Check if stream module is effectively enabled in modules-enabled
+    if [ -d "/etc/nginx/modules-enabled" ] && grep -r "ngx_stream_module" /etc/nginx/modules-enabled/ &>/dev/null; then
+        # Debian/Ubuntu: Standard include works because module ref is present
         modules_config="include /etc/nginx/modules-enabled/*.conf;"
     else
-        # RHEL/CentOS/Other: Explicitly load stream module if found
+        # Fallback: Explicitly load stream module if found (fixes missing symlinks on minimal installs)
         if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
             modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
         elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
             modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
         fi
+        
+        # Still include modules-enabled for other modules if dir exists
+        if [ -d "/etc/nginx/modules-enabled" ]; then
+             modules_config="${modules_config}\ninclude /etc/nginx/modules-enabled/*.conf;"
+        fi
     fi
     
     # Create configuration with Iran-Bypass multi-port support
     cat > "$nginx_conf" << EOF
-# Psiphon Conduit High-Performance Cluster Edition v2.2-iran-fix
+# Psiphon Conduit High-Performance Cluster Edition v2.4-iran-stable
 # Auto-generated configuration with Iran-Bypass Enhancements
 
 # Load Modules
