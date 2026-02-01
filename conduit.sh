@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v2.0                             ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.1-iran                        ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="2.0"
+VERSION="2.1-iran"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -375,6 +375,21 @@ SYSCTL_EOF
         log_warn "Some sysctl settings failed (may require reboot)"
     fi
     
+    # Iran-Bypass: Set MTU to 1380 to bypass MCI/Irancell packet fragmentation filters
+    local main_iface=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
+    if [ -z "$main_iface" ]; then
+        main_iface=$(ip link show | grep -v "lo" | grep "state UP" | head -1 | awk -F: '{print $2}' | sed 's/ //g')
+    fi
+    
+    if [ -n "$main_iface" ]; then
+        log_info "Setting MTU=1380 on interface: $main_iface (Iran DPI bypass)"
+        if ip link set dev "$main_iface" mtu 1380 2>/dev/null; then
+            log_success "MTU set to 1380 on $main_iface"
+        else
+            log_warn "Failed to set MTU on $main_iface (may require manual configuration)"
+        fi
+    fi
+    
     if ! grep -q "conduit" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf << 'LIMITS_EOF'
 
@@ -404,10 +419,10 @@ generate_nginx_conf() {
         udp_upstreams+="        server 127.0.0.1:${port};\n"
     done
     
-    # Create configuration
+    # Create configuration with Iran-Bypass multi-port support
     cat > "$nginx_conf" << EOF
 # Psiphon Conduit High-Performance Cluster Edition v2.0
-# Auto-generated configuration
+# Auto-generated configuration with Iran-Bypass Enhancements
 
 user nginx;
 worker_processes auto;
@@ -420,44 +435,85 @@ events {
 }
 
 stream {
-    # TCP Load Balancer for port 443
-    upstream conduit_tcp_443 {
+    # Backend Cluster (shared across all ports)
+    upstream conduit_backend {
         least_conn;
 $(echo -e "$tcp_upstreams")
     }
     
-    # UDP Load Balancer for port 5566
-    upstream conduit_udp_5566 {
+    # UDP Backend Cluster
+    upstream conduit_udp_backend {
         hash \$remote_addr consistent;
 $(echo -e "$udp_upstreams")
     }
     
-    # TCP Listener with SO_REUSEPORT
+    # Iran-Bypass: Multi-Port Listening (Port Hopping)
+    # Port 443 - Primary HTTPS (TCP)
     server {
         listen 443 reuseport;
-        proxy_pass conduit_tcp_443;
-        proxy_connect_timeout 5s;
-        proxy_timeout 300s;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
     }
     
-    # UDP Listener with SO_REUSEPORT
+    # Port 80 - HTTP (TCP) - bypasses HTTPS-only filters
     server {
-        listen 5566 udp reuseport;
-        proxy_pass conduit_udp_5566;
+        listen 80 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 53 - DNS (TCP) - disguises as DNS traffic
+    server {
+        listen 53 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 53 - DNS (UDP) - disguises as DNS traffic
+    server {
+        listen 53 udp reuseport;
+        proxy_pass conduit_udp_backend;
         proxy_timeout 60s;
         proxy_responses 1;
     }
     
-    # Additional TCP listener for port 5566
+    # Port 2053 - Alternative HTTPS (TCP) - CloudFlare-like
+    server {
+        listen 2053 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 8880 - Alt-HTTP (TCP) - another common bypass port
+    server {
+        listen 8880 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 5566 - Standard Psiphon UDP
+    server {
+        listen 5566 udp reuseport;
+        proxy_pass conduit_udp_backend;
+        proxy_timeout 60s;
+        proxy_responses 1;
+    }
+    
+    # Port 5566 - Standard Psiphon TCP
     server {
         listen 5566 reuseport;
-        proxy_pass conduit_tcp_443;
-        proxy_connect_timeout 5s;
-        proxy_timeout 300s;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
     }
 }
 EOF
-    log_success "Nginx configuration generated for $container_count backends"
+    log_success "Nginx configuration generated for $container_count backends (Iran-Bypass: Multi-port enabled)"
 }
 
 reload_nginx() {
@@ -927,6 +983,9 @@ run_conduit_container() {
     
     docker volume create "$vname" &>/dev/null || true
     
+    # Iran-Bypass: Generate random 16-character obfuscated SSH key
+    local obfuscation_key=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+    
     local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/tcp"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/udp"
@@ -938,10 +997,13 @@ run_conduit_container() {
     docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" conduit --max-clients ${mc:-$MAX_CLIENTS}"
     [ "$bw" != "-1" ] && docker_cmd="$docker_cmd --bandwidth ${bw:-$BANDWIDTH}"
     
+    # Iran-Bypass: Add obfuscated SSH key for traffic disguise
+    docker_cmd="$docker_cmd --obfuscated-ssh-key ${obfuscation_key}"
+    
     eval "$docker_cmd"
     
     if [ $? -eq 0 ]; then
-        log_success "Container ${cname} started (backend: 127.0.0.1:${backend_port})"
+        log_success "Container ${cname} started (backend: 127.0.0.1:${backend_port}, obfuscation: enabled)"
         return 0
     else
         log_error "Failed to start container ${cname}"
