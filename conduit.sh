@@ -3082,7 +3082,6 @@ stop_conduit() {
             echo -e "${YELLOW}✓ ${name} stopped and removed (extra)${NC}"
         fi
     done
-    done
     [ "$stopped" -eq 0 ] && echo -e "${YELLOW}No Conduit containers are running${NC}"
     
     # Stop Nginx
