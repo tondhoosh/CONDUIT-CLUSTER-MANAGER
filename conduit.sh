@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v2.2-iran-fix                    ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.3-iran-fix2                   ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="2.2-iran-fix"
+VERSION="2.3-iran-fix2"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -959,7 +959,7 @@ run_conduit_container() {
     [ -n "$mem" ] && docker_cmd="$docker_cmd --memory=\"${mem}\""
     docker_cmd="$docker_cmd --ulimit nofile=${CONTAINER_ULIMIT_NOFILE}:${CONTAINER_ULIMIT_NOFILE}"
     docker_cmd="$docker_cmd -v \"$vname:/data\""
-    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" start --max-clients ${mc:-$MAX_CLIENTS}"
+    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" start --data-dir /data --max-clients ${mc:-$MAX_CLIENTS}"
     [ "$bw" != "-1" ] && docker_cmd="$docker_cmd --bandwidth ${bw:-$BANDWIDTH}"
     
     # Iran-Bypass: Obfuscation key removed (unsupported by current CLI image)
@@ -7173,8 +7173,50 @@ SVCEOF
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 2.0
+# REACHED END OF SCRIPT - VERSION 2.3-iran-fix2
 # ###############################################################################
+
+show_claim_info() {
+    clear
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  RYVE CLAIM IDs (MNEMONICS)${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  To claim your rewards, enter these IDs in the Ryve app:"
+    echo ""
+    
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local cname=$(get_container_name $i)
+        printf "  • Container %-2s (%s): " "$i" "$cname"
+        
+        if ! docker ps | grep -q "$cname"; then
+            echo -e "${RED}Not Running${NC}"
+            continue
+        fi
+        
+        # Extract Proxy ID using implicit 'yes' to bypass interactive prompt
+        local id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
+        
+        if [ -n "$id" ]; then
+            echo -e "${GREEN}${id}${NC}"
+        else
+            echo -e "${YELLOW}Retrying...${NC}"
+            # Retry once with longer timeout or different method if needed
+            id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>&1 | grep "Proxy ID:" | awk '{print $3}')
+            if [ -n "$id" ]; then
+                 echo -e "                         ${GREEN}${id}${NC}"
+            else
+                 echo -e "${RED}Unavailable (Check logs)${NC}"
+            fi
+        fi
+    done
+    
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    read -n 1 -s -r -p "Press any key to return..." < /dev/tty
+}
+
 main "$@"
 
 
