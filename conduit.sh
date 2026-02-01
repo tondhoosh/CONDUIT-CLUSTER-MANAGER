@@ -31,8 +31,8 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.2"
-CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:latest"
+VERSION="2.0"
+CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
 FORCE_REINSTALL=false
@@ -434,7 +434,7 @@ prompt_settings() {
     fi
 
     echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
-    echo -e "  How many Conduit containers to run? (1-5)"
+    echo -e "  How many Conduit containers to run? (1-8)"
     echo -e "  More containers = more connections served"
     echo ""
     echo -e "  ${DIM}System: ${cpu_cores} CPU core(s), ${ram_mb}MB RAM${NC}"
@@ -453,7 +453,7 @@ prompt_settings() {
 
     if [ -z "$input_containers" ]; then
         CONTAINER_COUNT=$rec_containers
-    elif [[ "$input_containers" =~ ^[1-5]$ ]]; then
+    elif [[ "$input_containers" =~ ^[1-8]$ ]]; then
         CONTAINER_COUNT=$input_containers
     else
         log_warn "Invalid input. Using default: ${rec_containers}"
@@ -641,10 +641,9 @@ run_conduit() {
 
         docker rm -f "$cname" 2>/dev/null || true
 
-        # Ensure volume exists with correct permissions (uid 1000)
+        # Ensure volume exists with correct permissions
         docker volume create "$vname" 2>/dev/null || true
-        docker run --rm -v "${vname}:/home/conduit/data" alpine \
-            sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+        docker run --rm -v "${vname}:/data" alpine chmod 777 /data 2>/dev/null || true
 
         local resource_args=""
         local cpus=$(get_container_cpus $i)
@@ -657,11 +656,11 @@ run_conduit() {
             --restart unless-stopped \
             --log-opt max-size=15m \
             --log-opt max-file=3 \
-            -v "${vname}:/home/conduit/data" \
+            -v "${vname}:/data" \
             --network host \
             $resource_args \
             "$CONDUIT_IMAGE" \
-            start --max-clients "$MAX_CLIENTS" --bandwidth "$BANDWIDTH" --stats-file
+            start -d /data
 
         if [ $? -eq 0 ]; then
             log_success "$cname started"
