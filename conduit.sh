@@ -786,12 +786,18 @@ generate_nginx_conf() {
         udp_upstreams+="        server 127.0.0.1:${port};\n"
     done
     
+    # Detect nginx user (www-data on Debian/Ubuntu, nginx on RHEL)
+    local nginx_user="nginx"
+    if id www-data &>/dev/null; then
+        nginx_user="www-data"
+    fi
+    
     # Create configuration with Iran-Bypass multi-port support
     cat > "$nginx_conf" << EOF
 # Psiphon Conduit High-Performance Cluster Edition v2.1-iran
 # Auto-generated configuration with Iran-Bypass Enhancements
 
-user nginx;
+user ${nginx_user};
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
