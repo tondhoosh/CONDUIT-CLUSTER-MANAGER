@@ -512,6 +512,9 @@ run_conduit_container() {
     # Create volume if it doesn't exist
     docker volume create "$vname" &>/dev/null || true
     
+    # Fix volume permissions (ensure /data is writable)
+    docker run --rm -v "$vname:/data" alpine chmod 777 /data 2>/dev/null || true
+    
     # Build docker run command
     # Using --network host for proper Psiphon Conduit WebRTC/QUIC support
     local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
@@ -544,9 +547,6 @@ run_conduit_container() {
 
 run_conduit() {
     log_info "Starting ${CONTAINER_COUNT} Conduit container(s)..."
-    
-    # Ensure Docker volume permissions
-    fix_volume_permissions
     
     local success_count=0
     for i in $(seq 1 $CONTAINER_COUNT); do
