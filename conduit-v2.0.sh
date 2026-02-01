@@ -508,18 +508,14 @@ run_conduit_container() {
     local index=${1:-1}
     local cname=$(get_container_name $index)
     local vname=$(get_volume_name $index)
-    local backend_port=$((BACKEND_PORT_START + index - 1))
     
     # Create volume if it doesn't exist
     docker volume create "$vname" &>/dev/null || true
     
-    # Build docker run command with v2.0 enhancements
+    # Build docker run command
+    # Using --network host for proper Psiphon Conduit WebRTC/QUIC support
     local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
-    
-    # v2.0: Bridge networking with localhost port mapping (replaces --network host)
-    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/tcp"
-    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/udp"
-    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:16384-32768/udp"
+    docker_cmd="$docker_cmd --network host"
     
     # v2.0: Resource limits (CPU, memory)
     docker_cmd="$docker_cmd --cpus=\"${CONTAINER_CPU_LIMIT}\""
@@ -543,7 +539,7 @@ run_conduit_container() {
     eval "$docker_cmd"
     
     if [ $? -eq 0 ]; then
-        log_success "Container ${cname} started (backend: 127.0.0.1:${backend_port})"
+        log_success "Container ${cname} started (network: host mode)"
         return 0
     else
         log_error "Failed to start container ${cname}"
