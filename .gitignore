@@ -1,0 +1,189 @@
+# Conduit Manager v2.0 - Git Ignore File
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Backup Files
+*.bak
+*.backup
+*.old
+*.orig
+*~
+
+# Log Files
+*.log
+logs/
+*.out
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Node Modules (if any JavaScript tooling added)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python (if any Python scripts added)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Testing and Coverage
+coverage/
+.nyc_output/
+*.cover
+.pytest_cache/
+
+# Build Artifacts
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Conduit-Specific Files
+
+# Generated merged script (keep source modules only)
+# Uncomment if you want to exclude the merged script from git:
+# conduit-v2-complete.sh
+
+# Local testing artifacts
+test-output/
+test-results/
+
+# Local configuration (if any local dev config added)
+local.conf
+dev.conf
+
+# Backup directories from testing
+backups/
+*.json.bak
+
+# Docker volumes and build context (if local testing)
+docker-compose.override.yml
+.dockerignore
+
+# System tuning test results
+sysctl-before.txt
+sysctl-after.txt
+
+# Personal notes (developers may keep local notes)
+NOTES.md
+TODO-personal.md
+scratch/
+
+# Sensitive information (should never be committed)
+*.key
+*.pem
+*.crt
+secrets/
+.env
+.env.local
+
+# Telegram bot tokens (if accidentally saved to file)
+telegram-token.txt
+bot-config.json
+
+# GeoIP databases (too large, should be downloaded at runtime)
+*.mmdb
+GeoLite2-*.mmdb
+
+# Documentation build artifacts (if using doc generators)
+docs/_build/
+docs/.doctrees/
+
+# Roo Code specific files (AI assistant workspace)
+.roo/
+.roomodes
+
+# Archive files from development
+archive/
+old-versions/
+
+# Test VPS SSH keys (if any)
+test-vps-key
+test-vps-key.pub
+*.pem
+
+# Profiling and debugging
+*.prof
+*.trace
+debug.log
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Windows
+$RECYCLE.BIN/
+*.lnk
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vi/Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-v][a-z]
+[._]sw[a-p]
+Session.vim
+.netrwhist
+
+# Emacs
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
