@@ -48,6 +48,16 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# Cluster Configuration
+NGINX_TCP_PORT=443
+NGINX_UDP_PORT_START=16384
+NGINX_UDP_PORT_END=32768
+BACKEND_PORT_START=8081
+CONTAINER_ULIMIT_NOFILE="16384"
+CONTAINER_CPU_LIMIT="0.22"
+CONTAINER_MEM_LIMIT="384m"
+
+
 #═══════════════════════════════════════════════════════════════════════
 # Utility Functions
 #═══════════════════════════════════════════════════════════════════════
@@ -55,7 +65,7 @@ NC='\033[0m'
 print_header() {
     echo -e "${CYAN}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║                🚀 PSIPHON CONDUIT MANAGER v${VERSION}                  ║"
+    echo "║             🚀 CONDUIT CLUSTER MANAGER v${VERSION}                     ║"
     echo "╠═══════════════════════════════════════════════════════════════════╣"
     echo "║  Help users access the open internet during shutdowns             ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
@@ -76,6 +86,40 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[✗]${NC} $1"
+}
+
+get_container_name() {
+    local index=${1:-1}
+    if [ $index -eq 1 ]; then echo "conduit"; else echo "conduit-${index}"; fi
+}
+
+get_volume_name() {
+    local index=${1:-1}
+    if [ $index -eq 1 ]; then echo "conduit-data"; else echo "conduit-data-${index}"; fi
+}
+
+get_container_max_clients() {
+    local i=$1
+    local var="MAX_CLIENTS_${i}"
+    echo "${!var:-$MAX_CLIENTS}"
+}
+
+get_container_bandwidth() {
+    local i=$1
+    local var="BANDWIDTH_${i}"
+    echo "${!var:-$BANDWIDTH}"
+}
+
+get_container_cpus() {
+    local i=$1
+    local var="CONTAINER_CPUS_${i}"
+    echo "${!var:-$CONTAINER_CPU_LIMIT}"
+}
+
+get_container_memory() {
+    local i=$1
+    local var="CONTAINER_MEMORY_${i}"
+    echo "${!var:-$CONTAINER_MEM_LIMIT}"
 }
 
 check_root() {
@@ -257,6 +301,10 @@ check_dependencies() {
         install_package tcpdump || log_warn "Could not install tcpdump automatically"
     fi
 
+    if ! command -v bc &>/dev/null; then
+        install_package bc || log_warn "Could not install bc automatically"
+    fi
+
     # GeoIP (geoiplookup or mmdblookup fallback)
     if ! command -v geoiplookup &>/dev/null && ! command -v mmdblookup &>/dev/null; then
         case "$PKG_MANAGER" in
@@ -297,54 +345,47 @@ check_dependencies() {
 }
 
 tune_system() {
-    log_info "Applying system tuning for high-performance cluster..."
+    log_info "Applying kernel tuning for high-performance cluster..."
+    sysctl -a > "$INSTALL_DIR/sysctl-backup-$(date +%s).txt" 2>/dev/null || true
     
-    # Check if running as root
-    if [ "$EUID" -ne 0 ]; then
-        log_warn "System tuning requires root. Skipping..."
-        return 1
-    fi
-    
-    # Backup existing sysctl.conf
-    if [ -f /etc/sysctl.conf ]; then
-        cp /etc/sysctl.conf /etc/sysctl.conf.backup.$(date +%s)
-    fi
-    
-    # Apply settings via sysctl
-    sysctl -w net.core.somaxconn=65535 >/dev/null 2>&1
-    sysctl -w net.ipv4.ip_local_port_range="1024 65535" >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
-    sysctl -w fs.file-max=2097152 >/dev/null 2>&1
-    
-    # Additional recommended settings for high concurrency
-    sysctl -w net.ipv4.tcp_max_syn_backlog=8192 >/dev/null 2>&1
-    sysctl -w net.core.netdev_max_backlog=5000 >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_keepalive_time=300 >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1
-    
-    # Persist to sysctl.conf
-    cat >> /etc/sysctl.conf << 'EOF'
-
-# Psiphon Conduit High-Performance Cluster Edition v2.0
-# Applied: $(date)
-net.core.somaxconn = 65535
-net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.tcp_congestion_control = bbr
-fs.file-max = 2097152
+    cat > /etc/sysctl.d/99-conduit-cluster.conf << 'SYSCTL_EOF'
+# Conduit Cluster v2.0 Kernel Tuning
+net.core.somaxconn = 8192
 net.ipv4.tcp_max_syn_backlog = 8192
 net.core.netdev_max_backlog = 5000
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_keepalive_time = 300
+fs.file-max = 524288
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.netfilter.nf_conntrack_max = 262144
+net.nf_conntrack_max = 262144
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_tw_reuse = 1
-EOF
-    
-    # Verify BBR is available
-    if ! lsmod | grep -q tcp_bbr; then
-        modprobe tcp_bbr 2>/dev/null || log_warn "BBR module not available on this kernel"
+net.ipv4.ip_local_port_range = 10000 65535
+SYSCTL_EOF
+
+    if sysctl -p /etc/sysctl.d/99-conduit-cluster.conf; then
+        log_success "Kernel tuning applied"
+    else
+        log_warn "Some sysctl settings failed (may require reboot)"
     fi
     
-    log_success "System tuning applied successfully"
+    if ! grep -q "conduit" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf << 'LIMITS_EOF'
+
+# Conduit Cluster File Descriptor Limits
+* soft nofile 262144
+* hard nofile 524288
+root soft nofile 262144
+root hard nofile 524288
+LIMITS_EOF
+        log_success "File descriptor limits configured"
+    fi
 }
 
 generate_nginx_conf() {
@@ -588,7 +629,7 @@ prompt_settings() {
 
     if [ -z "$input_containers" ]; then
         CONTAINER_COUNT=$rec_containers
-    elif [[ "$input_containers" =~ ^[1-8]$ ]]; then
+    elif [[ "$input_containers" =~ ^([1-9]|1[0-6])$ ]]; then
         CONTAINER_COUNT=$input_containers
     else
         log_warn "Invalid input. Using default: ${rec_containers}"
@@ -759,62 +800,181 @@ check_and_offer_backup_restore() {
     done
 }
 
-run_conduit() {
-    local count=${CONTAINER_COUNT:-1}
-    log_info "Starting Conduit ($count container(s))..."
+install_nginx() {
+    log_info "Installing Nginx with stream module..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq
+        apt-get install -y nginx-full || apt-get install -y nginx-extras
+    elif command -v yum &>/dev/null; then
+        yum install -y nginx nginx-mod-stream
+    elif command -v dnf &>/dev/null; then
+        dnf install -y nginx nginx-mod-stream
+    fi
+    systemctl enable nginx
+    systemctl start nginx
+    log_success "Nginx installed"
+}
 
-    log_info "Pulling Conduit image ($CONDUIT_IMAGE)..."
-    if ! docker pull "$CONDUIT_IMAGE"; then
-        log_error "Failed to pull Conduit image. Check your internet connection."
-        exit 1
+generate_nginx_conf() {
+    local nginx_conf="/etc/nginx/nginx.conf"
+    local stream_conf="/etc/nginx/stream.d/conduit.conf"
+    
+    # Ensure Nginx is installed
+    if ! command -v nginx &>/dev/null; then
+        install_nginx
     fi
 
-    for i in $(seq 1 $count); do
-        local cname="conduit"
-        local vname="conduit-data"
-        [ "$i" -gt 1 ] && cname="conduit-${i}" && vname="conduit-data-${i}"
-
-        docker rm -f "$cname" 2>/dev/null || true
-
-        # Ensure volume exists with correct permissions
-        docker volume create "$vname" 2>/dev/null || true
-        docker run --rm -v "${vname}:/data" alpine chmod 777 /data 2>/dev/null || true
-
-        local resource_args=""
-        local cpus=$(get_container_cpus $i)
-        local mem=$(get_container_memory $i)
-        [ -n "$cpus" ] && resource_args+="--cpus $cpus "
-        [ -n "$mem" ] && resource_args+="--memory $mem "
-        # shellcheck disable=SC2086
-        docker run -d \
-            --name "$cname" \
-            --restart unless-stopped \
-            --log-opt max-size=15m \
-            --log-opt max-file=3 \
-            -v "${vname}:/data" \
-            --network host \
-            $resource_args \
-            "$CONDUIT_IMAGE" \
-            start -d /data
-
-        if [ $? -eq 0 ]; then
-            log_success "$cname started"
+    log_info "Generating Nginx Layer 4 Load Balancer configuration..."
+    mkdir -p /etc/nginx/stream.d
+    
+    if ! grep -q "include /etc/nginx/stream.d/\*.conf;" "$nginx_conf" 2>/dev/null; then
+        cp "$nginx_conf" "${nginx_conf}.bak.$(date +%s)" 2>/dev/null || true
+        if grep -q "^stream {" "$nginx_conf" 2>/dev/null; then
+            sed -i '/^stream {/a\    include /etc/nginx/stream.d/*.conf;' "$nginx_conf"
         else
-            log_error "Failed to start $cname"
+            sed -i '/^http {/i\stream {\n    include /etc/nginx/stream.d/*.conf;\n}\n' "$nginx_conf"
         fi
+    fi
+    
+    cat > "$stream_conf" << 'NGINX_EOF'
+# Psiphon Conduit Cluster Load Balancer v2.0
+
+upstream conduit_tcp_backend {
+    least_conn;
+NGINX_EOF
+
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local backend_port=$((BACKEND_PORT_START + i - 1))
+        echo "    server 127.0.0.1:${backend_port} max_fails=3 fail_timeout=30s;" >> "$stream_conf"
     done
 
-    sleep 3
-    if docker ps | grep -q conduit; then
-        if [ "$BANDWIDTH" == "-1" ]; then
-            log_success "Settings: max-clients=$MAX_CLIENTS, bandwidth=Unlimited, containers=$count"
-        else
-            log_success "Settings: max-clients=$MAX_CLIENTS, bandwidth=${BANDWIDTH}Mbps, containers=$count"
-        fi
+    cat >> "$stream_conf" << 'NGINX_EOF'
+}
+
+upstream conduit_udp_backend {
+    hash $remote_addr consistent;
+NGINX_EOF
+
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local backend_port=$((BACKEND_PORT_START + i - 1))
+        echo "    server 127.0.0.1:${backend_port} max_fails=3 fail_timeout=30s;" >> "$stream_conf"
+    done
+
+    cat >> "$stream_conf" << NGINX_EOF
+
+}
+
+server {
+    listen ${NGINX_TCP_PORT};
+    proxy_pass conduit_tcp_backend;
+    proxy_timeout 10m;
+    proxy_connect_timeout 30s;
+}
+
+server {
+    listen ${NGINX_UDP_PORT_START}-${NGINX_UDP_PORT_END} udp;
+    proxy_pass conduit_udp_backend;
+    proxy_timeout 10m;
+    proxy_responses 1;
+}
+
+error_log /var/log/nginx/conduit-stream-error.log warn;
+access_log /var/log/nginx/conduit-stream-access.log;
+NGINX_EOF
+
+    log_success "Nginx configuration generated"
+    reload_nginx
+}
+
+reload_nginx() {
+    log_info "Testing Nginx configuration..."
+    if nginx -t 2>&1 | tee /tmp/nginx-test.log; then
+        log_info "Reloading Nginx..."
+        systemctl reload nginx || systemctl restart nginx
+        log_success "Nginx reloaded"
+        return 0
     else
-        log_error "Conduit failed to start"
-        docker logs conduit 2>&1 | tail -10
-        exit 1
+        log_error "Nginx configuration test failed:"
+        cat /tmp/nginx-test.log
+        return 1
+    fi
+}
+
+fix_volume_permissions() {
+    local index=${1:-0}
+    if [ "$index" -eq 0 ]; then
+        for i in $(seq 1 $CONTAINER_COUNT); do
+            local vname=$(get_volume_name $i)
+            docker volume create "$vname" &>/dev/null || true
+            docker run --rm -v "$vname:/data" alpine chown -R 1000:1000 /data 2>/dev/null || true
+        done
+    else
+        local vname=$(get_volume_name $index)
+        docker volume create "$vname" &>/dev/null || true
+        docker run --rm -v "$vname:/data" alpine chown -R 1000:1000 /data 2>/dev/null || true
+    fi
+}
+
+run_conduit_container() {
+    local index=${1:-1}
+    local cname=$(get_container_name $index)
+    local vname=$(get_volume_name $index)
+    local backend_port=$((BACKEND_PORT_START + index - 1))
+    local mc=$(get_container_max_clients $index)
+    local bw=$(get_container_bandwidth $index)
+    local cpus=$(get_container_cpus $index)
+    local mem=$(get_container_memory $index)
+    
+    docker volume create "$vname" &>/dev/null || true
+    
+    local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
+    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/tcp"
+    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/udp"
+    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:16384-32768/udp"
+    [ -n "$cpus" ] && docker_cmd="$docker_cmd --cpus=\"${cpus}\""
+    [ -n "$mem" ] && docker_cmd="$docker_cmd --memory=\"${mem}\""
+    docker_cmd="$docker_cmd --ulimit nofile=${CONTAINER_ULIMIT_NOFILE}:${CONTAINER_ULIMIT_NOFILE}"
+    docker_cmd="$docker_cmd -v \"$vname:/data\""
+    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" conduit --max-clients ${mc:-$MAX_CLIENTS}"
+    [ "$bw" != "-1" ] && docker_cmd="$docker_cmd --bandwidth ${bw:-$BANDWIDTH}"
+    
+    eval "$docker_cmd"
+    
+    if [ $? -eq 0 ]; then
+        log_success "Container ${cname} started (backend: 127.0.0.1:${backend_port})"
+        return 0
+    else
+        log_error "Failed to start container ${cname}"
+        return 1
+    fi
+}
+
+run_conduit() {
+    log_info "Starting ${CONTAINER_COUNT} Conduit container(s)..."
+    
+    # Ensure Nginx is configured for this number of containers
+    generate_nginx_conf
+    
+    fix_volume_permissions
+    local success_count=0
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        if run_conduit_container $i; then
+            success_count=$((success_count + 1))
+        fi
+        sleep 2
+    done
+    
+    if [ $success_count -gt 0 ]; then
+        log_success "Cluster started with ${success_count}/${CONTAINER_COUNT} containers"
+        if [ "$BANDWIDTH" == "-1" ]; then
+            log_success "Settings: Max Clients=$MAX_CLIENTS, Bandwidth=Unlimited"
+        else
+            log_success "Settings: Max Clients=$MAX_CLIENTS, Bandwidth=${BANDWIDTH}Mbps"
+        fi
+        return 0
+    else
+        log_error "Failed to start any containers"
+        return 1
     fi
 }
 
@@ -5346,7 +5506,7 @@ show_settings_menu() {
                 redraw=true
                 ;;
             6)
-                show_qr_code
+                show_claim_info
                 redraw=true
                 ;;
             7)
@@ -5728,6 +5888,65 @@ telegram_setup_wizard() {
     read -n 1 -s -r -p "  Press any key to return..." < /dev/tty || true
 }
 
+container_details() {
+    echo -e "${CYAN}Container Resource Usage:${NC}"
+    echo ""
+    if docker ps -q --filter "name=conduit" >/dev/null 2>&1; then
+        docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" \
+            $(docker ps -q --filter "name=conduit")
+    else
+        echo -e "${YELLOW}No containers running.${NC}"
+    fi
+    echo ""
+    read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+}
+
+show_claim_info() {
+    clear
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  NODE CLAIMING INFORMATION${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${BOLD}Server IP:${NC} $(curl -s ifconfig.me)"
+    echo -e "${BOLD}Port:${NC} 443"
+    echo ""
+    echo -e "${BOLD}Mnemonic:${NC}"
+    # Try to get mnemonic from the first container
+    if docker ps -q --filter "name=conduit" | grep -q .; then
+         local mnemonic=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep mnemonic | cut -d'"' -f4)
+         if [ -n "$mnemonic" ]; then
+             echo -e "${GREEN}$mnemonic${NC}"
+         else
+             echo -e "${YELLOW}Could not retrieve mnemonic (key file may use different format)${NC}"
+         fi
+    else
+         echo -e "${RED}Conduit container not running. Cannot retrieve mnemonic.${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}Use this mnemonic to claim your node in the Psiphon dashboard${NC}"
+    echo ""
+    
+    # Show QR Code if available
+    echo -e "${BOLD}QR Code:${NC}"
+    if command -v qrencode &>/dev/null; then
+        local node_id_file="$INSTALL_DIR/backups/latest_node_id"
+        # We try to get ID from running container if possible
+        if docker ps -q --filter "name=conduit" | grep -q .; then
+             local node_id=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n')
+             if [ -n "$node_id" ]; then
+                echo -n "$node_id" | qrencode -t ANSIUTF8
+                echo ""
+                echo -e "Node ID: ${CYAN}${node_id}${NC}"
+             fi
+        fi
+    else
+        echo "qrencode not installed."
+    fi
+    
+    echo ""
+    read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+}
+
 show_menu() {
     # Auto-fix systemd service files: rewrite stale/old files, single daemon-reload
     if command -v systemctl &>/dev/null; then
@@ -5814,21 +6033,19 @@ SVCEOF
             print_header
 
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
-            echo -e "${CYAN}  MAIN MENU${NC}"
+            echo -e "${CYAN}  CLUSTER MANAGER MENU${NC}"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
-            echo -e "  1. 📈 View status dashboard"
-            echo -e "  2. 📊 Live connection stats"
-            echo -e "  3. 📋 View logs"
-            echo -e "  4. 🌍 Live peers by country"
+            echo -e "  1. 📊 Cluster Dashboard (Status & Resources)"
+            echo -e "  2. 📺 Live Monitor (Auto-refresh)"
+            echo -e "  3. 💻 Container Details (CPU/RAM/Net)"
+            echo -e "  4. 🌍 Live Peers Map"
+            echo -e "  5. 📋 View Logs"
             echo ""
-            echo -e "  5. ▶️  Start Conduit"
-            echo -e "  6. ⏹️  Stop Conduit"
-            echo -e "  7. 🔁 Restart Conduit"
-            echo -e "  8. 🔄 Update Conduit"
+            echo -e "  6. 🔑 Show Claiming Information (Mnemonic)"
+            echo -e "  7. ⚖️  Scale Cluster"
+            echo -e "  8. ⚙️  Cluster Operations (Start/Stop/Restart)"
             echo ""
-            echo -e "  9. ⚙️  Settings & Tools"
-            echo -e "  c. 📦 Manage containers"
-            echo -e "  a. 📊 Advanced stats"
+            echo -e "  9. 🛠️  Settings & Tools"
             echo -e "  i. ℹ️  Info & Help"
             echo -e "  0. 🚪 Exit"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
@@ -5848,7 +6065,7 @@ SVCEOF
                 redraw=true
                 ;;
             3)
-                show_logs
+                container_details
                 redraw=true
                 ;;
             4)
@@ -5856,35 +6073,37 @@ SVCEOF
                 redraw=true
                 ;;
             5)
-                start_conduit
-                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                show_logs
                 redraw=true
                 ;;
             6)
-                stop_conduit
-                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                show_claim_info
                 redraw=true
                 ;;
             7)
-                restart_conduit
-                read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+                manage_containers
                 redraw=true
                 ;;
             8)
-                update_conduit
+                echo ""
+                echo -e "  1. ▶️  Start Cluster"
+                echo -e "  2. ⏹️  Stop Cluster"
+                echo -e "  3. 🔁 Restart Cluster"
+                echo -e "  4. 🔄 Update Cluster"
+                echo ""
+                read -p "  Select operation: " op_choice < /dev/tty || true
+                case "$op_choice" in
+                    1) start_conduit ;;
+                    2) stop_conduit ;;
+                    3) restart_conduit ;;
+                    4) update_conduit ;;
+                    *) echo "Invalid" ;;
+                esac
                 read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
                 redraw=true
                 ;;
             9)
                 show_settings_menu
-                redraw=true
-                ;;
-            c)
-                manage_containers
-                redraw=true
-                ;;
-            a)
-                show_advanced_stats
                 redraw=true
                 ;;
             i)
@@ -6024,10 +6243,11 @@ _info_containers() {
     echo -e "    Container 3: ${CYAN}conduit-3${NC}    Volume: ${CYAN}conduit-data-3${NC}"
     echo -e "    ...up to 5 containers."
     echo ""
-    echo -e "  ${BOLD}Scaling recommendations${NC}"
-    echo -e "    ${YELLOW}1 CPU / <1GB RAM:${NC}  Stick with 1 container"
-    echo -e "    ${YELLOW}2 CPUs / 2GB RAM:${NC}  1-2 containers"
-    echo -e "    ${GREEN}4+ CPUs / 4GB RAM:${NC} 3-5 containers"
+    echo -e "  Scaling recommendations"
+    echo -e "    YELLOW1 CPU / <1GB RAM:NC  Stick with 1 container"
+    echo -e "    YELLOW2 CPUs / 2GB RAM:NC  1-2 containers"
+    echo -e "    GREEN4+ CPUs / 4GB RAM:NC 3-5 containers"
+    echo -e "    BLUEHigh-End Server:NC    Up to 16 containers"
     echo -e "  Each container uses ~50MB RAM per 100 clients."
     echo ""
     echo -e "  ${BOLD}Per-container settings${NC}"
