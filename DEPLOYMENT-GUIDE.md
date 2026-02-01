@@ -12,7 +12,7 @@
 
 | File | Size | Description | Status |
 |------|------|-------------|--------|
-| **conduit-v2.0.sh** | 1,450 lines | Production-ready foundation | ✅ Complete |
+| **conduit.sh** | 3,000+ lines | Production-ready foundation | ✅ Complete |
 | **conduit-v2-ui-module.sh** | 700 lines | Interactive menu, settings, container mgmt | ✅ Complete |
 | **conduit-v2-telegram-module.sh** | 450 lines | Telegram bot integration | ✅ Complete |
 | **conduit-v2-tools-module.sh** | 450 lines | QR codes, backup/restore, updates | ✅ Complete |
@@ -38,7 +38,7 @@
 
 ```bash
 # Step 1: Deploy foundation
-sudo bash conduit-v2.0.sh
+sudo bash conduit.sh
 
 # Step 2: Source modules in future sessions
 # Or merge them as needed using merge-v2-modules.sh
@@ -63,7 +63,7 @@ sudo bash conduit-v2.0.sh
 bash merge-v2-modules.sh
 
 # Step 2: Deploy the merged script
-sudo bash conduit-v2-complete.sh
+sudo bash conduit.sh
 ```
 
 **Pros:**
@@ -83,7 +83,7 @@ sudo bash conduit-v2-complete.sh
 
 ```bash
 # Deploy foundation
-sudo bash conduit-v2.0.sh
+sudo bash conduit.sh
 
 # Manage via CLI commands
 conduit start
@@ -133,7 +133,7 @@ mkdir -p ~/conduit-v2-deploy
 cd ~/conduit-v2-deploy
 
 # Download foundation
-wget https://raw.githubusercontent.com/yourusername/repo/main/conduit-v2.0.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit.sh
 
 # Download modules (if using modular approach)
 wget https://raw.githubusercontent.com/yourusername/repo/main/conduit-v2-ui-module.sh
@@ -142,22 +142,22 @@ wget https://raw.githubusercontent.com/yourusername/repo/main/conduit-v2-tools-m
 wget https://raw.githubusercontent.com/yourusername/repo/main/merge-v2-modules.sh
 
 # Or upload via scp
-scp conduit-v2*.sh root@82.165.24.39:~/conduit-v2-deploy/
+scp conduit.sh root@82.165.24.39:~/conduit-v2-deploy/
 ```
 
 ### Step 3: Choose Deployment Option
 
 **Option A - Foundation Only:**
 ```bash
-chmod +x conduit-v2.0.sh
-sudo bash conduit-v2.0.sh
+chmod +x conduit.sh
+sudo bash conduit.sh
 ```
 
 **Option B - Complete with UI:**
 ```bash
 chmod +x merge-v2-modules.sh
 bash merge-v2-modules.sh
-sudo bash conduit-v2-complete.sh
+sudo bash conduit.sh
 ```
 
 ### Step 4: Interactive Configuration

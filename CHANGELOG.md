@@ -64,7 +64,7 @@ This is a complete architectural overhaul of Conduit Manager, introducing enterp
 - **About/version/help** pages with comprehensive documentation
 
 #### Documentation
-- **README-v2.md** - Complete v2.0 documentation with architecture diagrams
+- **README.md** - Complete v2.0 documentation with architecture diagrams
 - **DEPLOYMENT-GUIDE.md** - Step-by-step deployment instructions
 - **CONTRIBUTING.md** - Contribution guidelines and code style standards
 - **CHANGELOG.md** - This file

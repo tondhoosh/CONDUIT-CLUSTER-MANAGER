@@ -81,9 +81,9 @@ A production-grade cluster management system for Psiphon Conduit nodes with **Ng
 Download and deploy the v2.0 foundation script:
 
 ```bash
-wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2.0.sh
-chmod +x conduit-v2.0.sh
-sudo bash conduit-v2.0.sh start
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit.sh
+chmod +x conduit.sh
+sudo bash conduit.sh start
 ```
 
 **Includes:**
@@ -103,8 +103,8 @@ Deploy foundation + individual modules:
 
 ```bash
 # 1. Deploy foundation (CLI-only)
-wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2.0.sh
-sudo bash conduit-v2.0.sh start
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit.sh
+sudo bash conduit.sh start
 
 # 2. Add UI module (optional)
 wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-ui-module.sh
@@ -126,7 +126,7 @@ cd CONDUIT-CLUSTER-MANAGER
 bash merge-v2-modules.sh
 
 # Deploy
-sudo bash conduit-v2-complete.sh
+sudo bash conduit.sh
 ```
 
 ---
@@ -250,7 +250,7 @@ conduit-v2-complete.sh scale 16          # Scale to 16 containers
 
 **Via Interactive Menu:**
 ```bash
-sudo bash conduit-v2-complete.sh
+sudo bash conduit.sh
 # Select: 8. Settings → Change container count / max clients / bandwidth
 ```
 
@@ -258,7 +258,7 @@ sudo bash conduit-v2-complete.sh
 ```bash
 nano /opt/conduit/settings.conf
 # Edit: CONTAINER_COUNT, MAX_CLIENTS, BANDWIDTH
-# Then: conduit-v2-complete.sh restart
+# Then: conduit.sh restart
 ```
 
 ---
