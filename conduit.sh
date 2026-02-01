@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v2.1-iran                        ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.2-iran-fix                    ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="2.1-iran"
+VERSION="2.2-iran-fix"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -792,29 +792,32 @@ generate_nginx_conf() {
         nginx_user="www-data"
     fi
     
-    # Detect stream module path (varies by distro)
-    local stream_module=""
-    if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
-        stream_module="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
-    elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
-        stream_module="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
+    # Detect proper module loading method
+    local modules_config=""
+    if [ -d "/etc/nginx/modules-enabled" ]; then
+        # Debian/Ubuntu: Use standard include mechanism
+        modules_config="include /etc/nginx/modules-enabled/*.conf;"
+    else
+        # RHEL/CentOS/Other: Explicitly load stream module if found
+        if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
+            modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
+        elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
+            modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
+        fi
     fi
     
     # Create configuration with Iran-Bypass multi-port support
     cat > "$nginx_conf" << EOF
-# Psiphon Conduit High-Performance Cluster Edition v2.1-iran
+# Psiphon Conduit High-Performance Cluster Edition v2.2-iran-fix
 # Auto-generated configuration with Iran-Bypass Enhancements
 
-# Load stream module (required for Layer 4 proxying)
-${stream_module}
+# Load Modules
+${modules_config}
 
 user ${nginx_user};
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
-
-# Include additional modules if available
-include /etc/nginx/modules-enabled/*.conf;
 
 events {
     worker_connections 65535;
@@ -956,11 +959,11 @@ run_conduit_container() {
     [ -n "$mem" ] && docker_cmd="$docker_cmd --memory=\"${mem}\""
     docker_cmd="$docker_cmd --ulimit nofile=${CONTAINER_ULIMIT_NOFILE}:${CONTAINER_ULIMIT_NOFILE}"
     docker_cmd="$docker_cmd -v \"$vname:/data\""
-    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" conduit --max-clients ${mc:-$MAX_CLIENTS}"
+    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" start --max-clients ${mc:-$MAX_CLIENTS}"
     [ "$bw" != "-1" ] && docker_cmd="$docker_cmd --bandwidth ${bw:-$BANDWIDTH}"
     
-    # Iran-Bypass: Add obfuscated SSH key for traffic disguise
-    docker_cmd="$docker_cmd --obfuscated-ssh-key ${obfuscation_key}"
+    # Iran-Bypass: Obfuscation key removed (unsupported by current CLI image)
+    # docker_cmd="$docker_cmd --obfuscated-ssh-key ${obfuscation_key}"
     
     eval "$docker_cmd"
     
