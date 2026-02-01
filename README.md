@@ -1,4 +1,4 @@
-# Conduit Manager - High-Performance Cluster Edition v2.0
+# Conduit Manager - High-Performance Cluster Edition v2.2-iran-fix
 
 ```
   ██████╗ ██████╗ ███╗   ██╗██████╗ ██╗   ██╗██╗████████╗
@@ -7,10 +7,10 @@
  ██║     ██║   ██║██║╚██╗██║██║  ██║██║   ██║██║   ██║
  ╚██████╗╚██████╔╝██║ ╚████║██████╔╝╚██████╔╝██║   ██║
   ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚═════╝  ╚═════╝ ╚═╝   ╚═╝
-              HIGH-PERFORMANCE CLUSTER EDITION v2.0
+              HIGH-PERFORMANCE CLUSTER EDITION v2.2-iran-fix
 ```
 
-![Version](https://img.shields.io/badge/version-2.0.0--cluster-blue)
+![Version](https://img.shields.io/badge/version-2.2--iran--fix-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange)
 ![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker&logoColor=white)
@@ -612,6 +612,13 @@ Copyright (c) 2026 Saman - SamNet
 ---
 
 ## 📜 Changelog
+
+### v2.2-iran-fix (2026-02-01)
+- ✨ **NEW:** Iran-specific MTU optimization (1380)
+- ✨ **NEW:** Multi-port listening (443, 80, 53, 2053, 8880, 5566)
+- 🔧 **FIX:** Nginx module loading conflict resolved
+- 🔧 **FIX:** CLI command syntax updated (`conduit start`)
+- 🔧 **FIX:** Nginx user detection (www-data vs nginx)
 
 ### v2.0.0-cluster (2026-02-01)
 
