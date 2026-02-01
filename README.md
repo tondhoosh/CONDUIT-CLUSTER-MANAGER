@@ -1,4 +1,4 @@
-# Conduit Manager - High-Performance Cluster Edition v2.4-iran-stable
+# Conduit Manager - High-Performance Cluster Edition v2.5-iran-ipv6
 
 ```
   ██████╗ ██████╗ ███╗   ██╗██████╗ ██╗   ██╗██╗████████╗
@@ -612,6 +612,10 @@ Copyright (c) 2026 Saman - SamNet
 ---
 
 ## 📜 Changelog
+
+### v2.5-iran-ipv6 (2026-02-01)
+- ✨ **NEW:** Full IPv6 Support (Dual-stack listeners on all ports)
+- 🔧 **FIX:** Version bump for stability
 
 ### v2.4-iran-stable (2026-02-01)
 - 🔧 **FIX:** Improved Nginx stream module detection (handles missing symlinks)

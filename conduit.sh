@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v2.4-iran-stable                 ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.5-iran-ipv6                   ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -31,7 +31,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="v2.4-iran-stable"
+VERSION="v2.5-iran-ipv6"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/conduit}"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -847,49 +847,55 @@ $(echo -e "$udp_upstreams")
     }
     
     # Iran-Bypass: Multi-Port Listening (Port Hopping)
-    # Port 443 - Primary HTTPS (TCP)
+    # Port 443    # Main HTTPS (TCP)
     server {
         listen 443 reuseport;
+        listen [::]:443 reuseport;
         proxy_pass conduit_backend;
         proxy_connect_timeout 10s;
         proxy_timeout 60s;
     }
-    
-    # Port 80 - HTTP (TCP) - bypasses HTTPS-only filters
+
+    # HTTP (TCP) - often used for handshake
     server {
         listen 80 reuseport;
+        listen [::]:80 reuseport;
         proxy_pass conduit_backend;
         proxy_connect_timeout 10s;
         proxy_timeout 60s;
     }
     
-    # Port 53 - DNS (TCP) - disguises as DNS traffic
-    server {
-        listen 53 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 53 - DNS (UDP) - disguises as DNS traffic
+    # DNS (UDP)
     server {
         listen 53 udp reuseport;
+        listen [::]:53 udp reuseport;
         proxy_pass conduit_udp_backend;
         proxy_timeout 60s;
         proxy_responses 1;
     }
-    
-    # Port 2053 - Alternative HTTPS (TCP) - CloudFlare-like
+
+    # DNS (TCP)
     server {
-        listen 2053 reuseport;
+        listen 53 reuseport;
+        listen [::]:53 reuseport;
         proxy_pass conduit_backend;
         proxy_connect_timeout 10s;
         proxy_timeout 60s;
     }
     
-    # Port 8880 - Alt-HTTP (TCP) - another common bypass port
+    # Port 2053 (TCP) - Cloudflare-compatible
+    server {
+        listen 2053 reuseport;
+        listen [::]:2053 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 8880 - Alt-HTTP (TCP)
     server {
         listen 8880 reuseport;
+        listen [::]:8880 reuseport;
         proxy_pass conduit_backend;
         proxy_connect_timeout 10s;
         proxy_timeout 60s;
@@ -898,6 +904,7 @@ $(echo -e "$udp_upstreams")
     # Port 5566 - Standard Psiphon UDP
     server {
         listen 5566 udp reuseport;
+        listen [::]:5566 udp reuseport;
         proxy_pass conduit_udp_backend;
         proxy_timeout 60s;
         proxy_responses 1;
@@ -906,6 +913,7 @@ $(echo -e "$udp_upstreams")
     # Port 5566 - Standard Psiphon TCP
     server {
         listen 5566 reuseport;
+        listen [::]:5566 reuseport;
         proxy_pass conduit_backend;
         proxy_connect_timeout 10s;
         proxy_timeout 60s;
