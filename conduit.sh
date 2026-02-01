@@ -290,6 +290,141 @@ check_dependencies() {
     if ! command -v qrencode &>/dev/null; then
         install_package qrencode || log_warn "Could not install qrencode automatically"
     fi
+
+    if ! command -v nginx &>/dev/null; then
+        install_package nginx || log_warn "Could not install nginx automatically"
+    fi
+}
+
+tune_system() {
+    log_info "Applying system tuning for high-performance cluster..."
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        log_warn "System tuning requires root. Skipping..."
+        return 1
+    fi
+    
+    # Backup existing sysctl.conf
+    if [ -f /etc/sysctl.conf ]; then
+        cp /etc/sysctl.conf /etc/sysctl.conf.backup.$(date +%s)
+    fi
+    
+    # Apply settings via sysctl
+    sysctl -w net.core.somaxconn=65535 >/dev/null 2>&1
+    sysctl -w net.ipv4.ip_local_port_range="1024 65535" >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+    sysctl -w fs.file-max=2097152 >/dev/null 2>&1
+    
+    # Additional recommended settings for high concurrency
+    sysctl -w net.ipv4.tcp_max_syn_backlog=8192 >/dev/null 2>&1
+    sysctl -w net.core.netdev_max_backlog=5000 >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_keepalive_time=300 >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1
+    
+    # Persist to sysctl.conf
+    cat >> /etc/sysctl.conf << 'EOF'
+
+# Psiphon Conduit High-Performance Cluster Edition v2.0
+# Applied: $(date)
+net.core.somaxconn = 65535
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.tcp_congestion_control = bbr
+fs.file-max = 2097152
+net.ipv4.tcp_max_syn_backlog = 8192
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_tw_reuse = 1
+EOF
+    
+    # Verify BBR is available
+    if ! lsmod | grep -q tcp_bbr; then
+        modprobe tcp_bbr 2>/dev/null || log_warn "BBR module not available on this kernel"
+    fi
+    
+    log_success "System tuning applied successfully"
+}
+
+generate_nginx_conf() {
+    local container_count=${1:-${CONTAINER_COUNT:-40}}
+    local nginx_conf="/etc/nginx/nginx.conf"
+    
+    # Backup existing config
+    [ -f "$nginx_conf" ] && cp "$nginx_conf" "${nginx_conf}.backup.$(date +%s)"
+    
+    # Generate upstream blocks
+    local tcp_upstreams=""
+    local udp_upstreams=""
+    for i in $(seq 1 $container_count); do
+        local port=$((8080 + i))
+        tcp_upstreams+="        server 127.0.0.1:${port};\n"
+        udp_upstreams+="        server 127.0.0.1:${port};\n"
+    done
+    
+    # Create configuration
+    cat > "$nginx_conf" << EOF
+# Psiphon Conduit High-Performance Cluster Edition v2.0
+# Auto-generated configuration
+
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 65535;
+    use epoll;
+}
+
+stream {
+    # TCP Load Balancer for port 443
+    upstream conduit_tcp_443 {
+        least_conn;
+$(echo -e "$tcp_upstreams")
+    }
+    
+    # UDP Load Balancer for port 5566
+    upstream conduit_udp_5566 {
+        hash \$remote_addr consistent;
+$(echo -e "$udp_upstreams")
+    }
+    
+    # TCP Listener with SO_REUSEPORT
+    server {
+        listen 443 reuseport;
+        proxy_pass conduit_tcp_443;
+        proxy_connect_timeout 5s;
+        proxy_timeout 300s;
+    }
+    
+    # UDP Listener with SO_REUSEPORT
+    server {
+        listen 5566 udp reuseport;
+        proxy_pass conduit_udp_5566;
+        proxy_timeout 60s;
+        proxy_responses 1;
+    }
+    
+    # Additional TCP listener for port 5566
+    server {
+        listen 5566 reuseport;
+        proxy_pass conduit_tcp_443;
+        proxy_connect_timeout 5s;
+        proxy_timeout 300s;
+    }
+}
+EOF
+    log_success "Nginx configuration generated for $container_count backends"
+}
+
+reload_nginx() {
+    if command -v systemctl &>/dev/null; then
+        systemctl reload nginx 2>/dev/null || systemctl restart nginx
+    else
+        nginx -s reload 2>/dev/null || nginx
+    fi
 }
 
 get_ram_mb() {
@@ -984,6 +1119,8 @@ run_conduit_container() {
     local bw=$(get_container_bandwidth $idx)
     local cpus=$(get_container_cpus $idx)
     local mem=$(get_container_memory $idx)
+    local port=$((8080 + idx))
+
     # Remove any existing container with the same name to avoid conflicts
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
         docker rm -f "$name" 2>/dev/null || true
@@ -993,18 +1130,26 @@ run_conduit_container() {
     [ -n "$mem" ] && resource_args+="--memory $mem "
     # Ensure volume permissions
     docker volume create "$vol" 2>/dev/null || true
-    docker run --rm -v "${vol}:/data" alpine chmod 777 /data 2>/dev/null || true
+    docker run --rm -v "${vol}:/home/conduit/data" alpine \
+        sh -c "chown -R 1000:1000 /home/conduit/data" 2>/dev/null || true
+    
     # shellcheck disable=SC2086
     docker run -d \
         --name "$name" \
         --restart unless-stopped \
         --log-opt max-size=15m \
         --log-opt max-file=3 \
-        -v "${vol}:/data" \
-        --network host \
+        --ulimit nofile=65535:65535 \
+        -v "${vol}:/home/conduit/data" \
+        -p "127.0.0.1:${port}:443" \
+        -p "127.0.0.1:${port}:5566" \
+        -p "127.0.0.1:${port}:5566/udp" \
         $resource_args \
         "$CONDUIT_IMAGE" \
-        start -d /data
+        start \
+        --max-clients "$mc" \
+        --bandwidth "$bw" \
+        --stats-file
 }
 
 print_header() {
@@ -1542,6 +1687,9 @@ geo_lookup() {
     local country=""
     if command -v geoiplookup &>/dev/null; then
         country=$(geoiplookup "$ip" 2>/dev/null | awk -F: '/Country Edition/{print $2}' | sed 's/^ *//' | cut -d, -f2- | sed 's/^ *//')
+        if [[ "$country" == *"Address not found"* ]]; then
+            country="Unknown"
+        fi
     elif command -v mmdblookup &>/dev/null; then
         local mmdb=""
         for f in /usr/share/GeoIP/GeoLite2-Country.mmdb /var/lib/GeoIP/GeoLite2-Country.mmdb; do
@@ -1593,8 +1741,13 @@ TCPDUMP_BIN=$(command -v tcpdump 2>/dev/null || echo "tcpdump")
 AWK_BIN=$(command -v gawk 2>/dev/null || command -v awk 2>/dev/null || echo "awk")
 
 # Detect local IP
+# Detect local IP and Interface
 LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$LOCAL_IP" ] && LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+# Detect main interface
+MAIN_IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
+[ -z "$MAIN_IFACE" ] && MAIN_IFACE=$(ip link show | grep -v "lo" | head -1 | awk -F: '{print $2}' | sed 's/ //g')
 
 # Batch process: resolve GeoIP + merge into cumulative files in bulk
 process_batch() {
@@ -1823,7 +1976,7 @@ while true; do
                 break
             fi
         fi
-    done < <($TCPDUMP_BIN -tt -l -ni any -n -q "(tcp or udp) and not port 22" 2>/dev/null | $AWK_BIN -v local_ip="$LOCAL_IP" '
+    done < <($TCPDUMP_BIN -tt -l -ni "${MAIN_IFACE:-any}" -n -q "(tcp or udp) and (port 443 or port 5566)" 2>/dev/null | $AWK_BIN -v local_ip="$LOCAL_IP" '
     BEGIN { last_sync = 0; OFMT = "%.0f"; CONVFMT = "%.0f" }
     {
         # Parse timestamp
@@ -2687,6 +2840,18 @@ start_conduit() {
 
     echo "Starting Conduit ($CONTAINER_COUNT container(s))..."
 
+    # Phase 1: Tuning & Infrastructure
+    tune_system
+    generate_nginx_conf
+
+    # Ensure Nginx is running
+    if command -v systemctl &>/dev/null; then
+        systemctl enable nginx &>/dev/null || true
+        systemctl start nginx &>/dev/null || true
+    else
+        nginx 2>/dev/null || true
+    fi
+
     # Check if any stopped containers exist that will be recreated
     local has_stopped=false
     for i in $(seq 1 $CONTAINER_COUNT); do
@@ -2758,7 +2923,19 @@ stop_conduit() {
             echo -e "${YELLOW}✓ ${name} stopped and removed (extra)${NC}"
         fi
     done
+    done
     [ "$stopped" -eq 0 ] && echo -e "${YELLOW}No Conduit containers are running${NC}"
+    
+    # Stop Nginx
+    if command -v systemctl &>/dev/null; then
+        if systemctl is-active nginx &>/dev/null; then
+            systemctl stop nginx 2>/dev/null
+            echo -e "${YELLOW}✓ Nginx load balancer stopped${NC}"
+        fi
+    elif pgrep nginx >/dev/null; then
+        nginx -s stop 2>/dev/null
+        echo -e "${YELLOW}✓ Nginx load balancer stopped${NC}"
+    fi
     # Stop background tracker
     stop_tracker_service 2>/dev/null || true
     return 0
