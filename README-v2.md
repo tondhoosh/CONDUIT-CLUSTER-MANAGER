@@ -81,7 +81,7 @@ A production-grade cluster management system for Psiphon Conduit nodes with **Ng
 Download and deploy the unified v2.0 script with all features:
 
 ```bash
-wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit-v2-complete.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-complete.sh
 sudo bash conduit-v2-complete.sh
 ```
 
@@ -99,15 +99,15 @@ Deploy foundation + individual modules:
 
 ```bash
 # 1. Deploy foundation (CLI-only)
-wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit-v2.0.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2.0.sh
 sudo bash conduit-v2.0.sh start
 
 # 2. Add UI module (optional)
-wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit-v2-ui-module.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-ui-module.sh
 source conduit-v2-ui-module.sh
 
 # 3. Add Telegram (optional)
-wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit-v2-telegram-module.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-telegram-module.sh
 source conduit-v2-telegram-module.sh
 ```
 
@@ -115,8 +115,8 @@ source conduit-v2-telegram-module.sh
 
 ```bash
 # Clone repository
-git clone https://github.com/SamNet-dev/conduit-manager.git
-cd conduit-manager
+git clone https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER.git
+cd CONDUIT-CLUSTER-MANAGER
 
 # Merge all modules into complete script
 bash merge-v2-modules.sh
@@ -475,7 +475,7 @@ sudo nginx -T | grep upstream
    - [plans/devops-review-and-hardening.md](plans/devops-review-and-hardening.md)
 
 4. **Open an issue:**
-   - [GitHub Issues](https://github.com/SamNet-dev/conduit-manager/issues)
+   - [GitHub Issues](https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/issues)
 
 ---
 
@@ -488,7 +488,7 @@ sudo nginx -T | grep upstream
 conduit backup
 
 # Download v2.0
-wget https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit-v2-complete.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-complete.sh
 
 # Run deployment (preserves node keys)
 sudo bash conduit-v2-complete.sh
@@ -555,8 +555,8 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ```bash
 # Clone repository
-git clone https://github.com/SamNet-dev/conduit-manager.git
-cd conduit-manager
+git clone https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER.git
+cd CONDUIT-CLUSTER-MANAGER
 
 # Review architecture
 cat plans/conduit-v2-architecture.md
@@ -593,8 +593,8 @@ Copyright (c) 2026 Saman - SamNet
 
 - **Psiphon:** https://psiphon.ca/
 - **Psiphon Conduit:** https://github.com/Psiphon-Inc/conduit
-- **GitHub:** https://github.com/SamNet-dev/conduit-manager
-- **Issues:** https://github.com/SamNet-dev/conduit-manager/issues
+- **GitHub:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER
+- **Issues:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/issues
 
 ---
 

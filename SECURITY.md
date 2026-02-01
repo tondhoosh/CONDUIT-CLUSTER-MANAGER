@@ -22,7 +22,7 @@ We take security seriously. If you discover a security vulnerability, please fol
 
 Send a detailed report to:
 - **Email:** [Create a security advisory on GitHub]
-- **GitHub Security Advisory:** https://github.com/SamNet-dev/conduit-manager/security/advisories/new
+- **GitHub Security Advisory:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/security/advisories/new
 
 ### 3. Include in Your Report
 
@@ -344,8 +344,8 @@ Thanks to [Researcher Name] for responsible disclosure.
 ## Contact
 
 For security-related questions (not vulnerabilities):
-- GitHub Discussions: https://github.com/SamNet-dev/conduit-manager/discussions
-- GitHub Issues: https://github.com/SamNet-dev/conduit-manager/issues
+- GitHub Discussions: https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/discussions
+- GitHub Issues: https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/issues
 
 For vulnerabilities, use the private reporting methods above.
 

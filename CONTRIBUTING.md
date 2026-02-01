@@ -51,11 +51,11 @@ We are committed to providing a welcoming and inclusive environment for all cont
 
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR-USERNAME/conduit-manager.git
-cd conduit-manager
+git clone https://github.com/YOUR-USERNAME/CONDUIT-CLUSTER-MANAGER.git
+cd CONDUIT-CLUSTER-MANAGER
 
 # Add upstream remote
-git remote add upstream https://github.com/SamNet-dev/conduit-manager.git
+git remote add upstream https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER.git
 ```
 
 ### Project Structure
@@ -401,7 +401,7 @@ git commit -m "feat(scope): description"
 git push origin feature/your-feature-name
 
 # Open PR on GitHub
-# Go to: https://github.com/SamNet-dev/conduit-manager/compare
+# Go to: https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/compare
 ```
 
 ### PR Guidelines

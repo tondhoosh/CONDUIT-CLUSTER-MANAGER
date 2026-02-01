@@ -625,7 +625,7 @@ tail -f /var/log/nginx/error.log
 
 ### Installation
 \`\`\`bash
-curl -sL https://raw.githubusercontent.com/SamNet-dev/conduit-manager/v2.0/conduit.sh | sudo bash
+curl -sL https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-complete.sh | sudo bash
 \`\`\`
 
 ### Migration from v1.x

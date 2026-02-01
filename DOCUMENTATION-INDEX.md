@@ -225,8 +225,8 @@ tail -f /var/log/conduit/nginx.log
 ### Support Channels
 
 - **Documentation:** This index
-- **Issues:** https://github.com/SamNet-dev/conduit-manager/issues
-- **Discussions:** https://github.com/SamNet-dev/conduit-manager/discussions
+- **Issues:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/issues
+- **Discussions:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/discussions
 - **Security:** [SECURITY.md](SECURITY.md)
 
 ---
@@ -346,7 +346,7 @@ Before releasing documentation:
 - Missing information? Request in feature request
 
 **Project Links:**
-- **GitHub:** https://github.com/SamNet-dev/conduit-manager
+- **GitHub:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER
 - **Psiphon:** https://psiphon.ca/
 - **Conduit:** https://github.com/Psiphon-Inc/conduit
 

@@ -641,8 +641,8 @@ docker exec conduit conduit --version
 ## 📞 Support Information
 
 **Project:** Conduit High-Performance Cluster Edition v2.0  
-**Based on:** Psiphon Conduit (https://psiphon.ca)  
-**Original Script:** https://github.com/SamNet-dev/conduit-manager  
+**Based on:** Psiphon Conduit (https://psiphon.ca)
+**Repository:** https://github.com/tondhoosh/CONDUIT-CLUSTER-MANAGER
 
 **Created:** 2026-02-01  
 **Version:** 2.0.0-complete  
