@@ -1916,14 +1916,13 @@ process_batch() {
     local geo_map="$PERSIST_DIR/geo_map"
 
     # Step 1: Extract unique IPs and bulk-resolve GeoIP
-    # Read cache once, resolve uncached, produce ip|country mapping
     $AWK_BIN -F'|' '{print $2}' "$batch" | sort -u > "$PERSIST_DIR/batch_ips"
 
     # Build geo mapping: read cache + resolve missing
     > "$geo_map"
     while IFS= read -r ip; do
         [ -z "$ip" ] && continue
-        country=""
+        local country=""
         if [ -f "$GEOIP_CACHE" ]; then
             country=$(grep "^${ip}|" "$GEOIP_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
         fi
