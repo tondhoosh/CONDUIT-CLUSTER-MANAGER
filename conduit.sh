@@ -792,15 +792,29 @@ generate_nginx_conf() {
         nginx_user="www-data"
     fi
     
+    # Detect stream module path (varies by distro)
+    local stream_module=""
+    if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
+        stream_module="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
+    elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
+        stream_module="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
+    fi
+    
     # Create configuration with Iran-Bypass multi-port support
     cat > "$nginx_conf" << EOF
 # Psiphon Conduit High-Performance Cluster Edition v2.1-iran
 # Auto-generated configuration with Iran-Bypass Enhancements
 
+# Load stream module (required for Layer 4 proxying)
+${stream_module}
+
 user ${nginx_user};
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
+
+# Include additional modules if available
+include /etc/nginx/modules-enabled/*.conf;
 
 events {
     worker_connections 65535;
