@@ -403,118 +403,7 @@ LIMITS_EOF
     fi
 }
 
-generate_nginx_conf() {
-    local container_count=${1:-${CONTAINER_COUNT:-40}}
-    local nginx_conf="/etc/nginx/nginx.conf"
-    
-    # Backup existing config
-    [ -f "$nginx_conf" ] && cp "$nginx_conf" "${nginx_conf}.backup.$(date +%s)"
-    
-    # Generate upstream blocks
-    local tcp_upstreams=""
-    local udp_upstreams=""
-    for i in $(seq 1 $container_count); do
-        local port=$((8080 + i))
-        tcp_upstreams+="        server 127.0.0.1:${port};\n"
-        udp_upstreams+="        server 127.0.0.1:${port};\n"
-    done
-    
-    # Create configuration with Iran-Bypass multi-port support
-    cat > "$nginx_conf" << EOF
-# Psiphon Conduit High-Performance Cluster Edition v2.0
-# Auto-generated configuration with Iran-Bypass Enhancements
-
-user nginx;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 65535;
-    use epoll;
-}
-
-stream {
-    # Backend Cluster (shared across all ports)
-    upstream conduit_backend {
-        least_conn;
-$(echo -e "$tcp_upstreams")
-    }
-    
-    # UDP Backend Cluster
-    upstream conduit_udp_backend {
-        hash \$remote_addr consistent;
-$(echo -e "$udp_upstreams")
-    }
-    
-    # Iran-Bypass: Multi-Port Listening (Port Hopping)
-    # Port 443 - Primary HTTPS (TCP)
-    server {
-        listen 443 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 80 - HTTP (TCP) - bypasses HTTPS-only filters
-    server {
-        listen 80 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 53 - DNS (TCP) - disguises as DNS traffic
-    server {
-        listen 53 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 53 - DNS (UDP) - disguises as DNS traffic
-    server {
-        listen 53 udp reuseport;
-        proxy_pass conduit_udp_backend;
-        proxy_timeout 60s;
-        proxy_responses 1;
-    }
-    
-    # Port 2053 - Alternative HTTPS (TCP) - CloudFlare-like
-    server {
-        listen 2053 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 8880 - Alt-HTTP (TCP) - another common bypass port
-    server {
-        listen 8880 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-    
-    # Port 5566 - Standard Psiphon UDP
-    server {
-        listen 5566 udp reuseport;
-        proxy_pass conduit_udp_backend;
-        proxy_timeout 60s;
-        proxy_responses 1;
-    }
-    
-    # Port 5566 - Standard Psiphon TCP
-    server {
-        listen 5566 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
-}
-EOF
-    log_success "Nginx configuration generated for $container_count backends (Iran-Bypass: Multi-port enabled)"
-}
+# Note: generate_nginx_conf is defined later in the script with Iran-Bypass multi-port support
 
 reload_nginx() {
     if command -v systemctl &>/dev/null; then
@@ -872,8 +761,8 @@ install_nginx() {
 }
 
 generate_nginx_conf() {
+    local container_count=${1:-${CONTAINER_COUNT:-8}}
     local nginx_conf="/etc/nginx/nginx.conf"
-    local stream_conf="/etc/nginx/stream.d/conduit.conf"
     
     # Ensure Nginx is installed
     if ! command -v nginx &>/dev/null; then
@@ -881,64 +770,117 @@ generate_nginx_conf() {
     fi
 
     log_info "Generating Nginx Layer 4 Load Balancer configuration..."
-    mkdir -p /etc/nginx/stream.d
     
-    if ! grep -q "include /etc/nginx/stream.d/\*.conf;" "$nginx_conf" 2>/dev/null; then
-        cp "$nginx_conf" "${nginx_conf}.bak.$(date +%s)" 2>/dev/null || true
-        if grep -q "^stream {" "$nginx_conf" 2>/dev/null; then
-            sed -i '/^stream {/a\    include /etc/nginx/stream.d/*.conf;' "$nginx_conf"
-        else
-            sed -i '/^http {/i\stream {\n    include /etc/nginx/stream.d/*.conf;\n}\n' "$nginx_conf"
-        fi
-    fi
+    # Remove old stream.d configs to avoid conflicts
+    rm -f /etc/nginx/stream.d/conduit.conf 2>/dev/null || true
     
-    cat > "$stream_conf" << 'NGINX_EOF'
-# Psiphon Conduit Cluster Load Balancer v2.0
-
-upstream conduit_tcp_backend {
-    least_conn;
-NGINX_EOF
-
-    for i in $(seq 1 $CONTAINER_COUNT); do
-        local backend_port=$((BACKEND_PORT_START + i - 1))
-        echo "    server 127.0.0.1:${backend_port} max_fails=3 fail_timeout=30s;" >> "$stream_conf"
+    # Backup existing config
+    [ -f "$nginx_conf" ] && cp "$nginx_conf" "${nginx_conf}.backup.$(date +%s)"
+    
+    # Generate upstream blocks
+    local tcp_upstreams=""
+    local udp_upstreams=""
+    for i in $(seq 1 $container_count); do
+        local port=$((BACKEND_PORT_START + i - 1))
+        tcp_upstreams+="        server 127.0.0.1:${port};\n"
+        udp_upstreams+="        server 127.0.0.1:${port};\n"
     done
+    
+    # Create configuration with Iran-Bypass multi-port support
+    cat > "$nginx_conf" << EOF
+# Psiphon Conduit High-Performance Cluster Edition v2.1-iran
+# Auto-generated configuration with Iran-Bypass Enhancements
 
-    cat >> "$stream_conf" << 'NGINX_EOF'
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 65535;
+    use epoll;
 }
 
-upstream conduit_udp_backend {
-    hash $remote_addr consistent;
-NGINX_EOF
-
-    for i in $(seq 1 $CONTAINER_COUNT); do
-        local backend_port=$((BACKEND_PORT_START + i - 1))
-        echo "    server 127.0.0.1:${backend_port} max_fails=3 fail_timeout=30s;" >> "$stream_conf"
-    done
-
-    cat >> "$stream_conf" << NGINX_EOF
-
+stream {
+    # Backend Cluster (shared across all ports)
+    upstream conduit_backend {
+        least_conn;
+$(echo -e "$tcp_upstreams")
+    }
+    
+    # UDP Backend Cluster
+    upstream conduit_udp_backend {
+        hash \$remote_addr consistent;
+$(echo -e "$udp_upstreams")
+    }
+    
+    # Iran-Bypass: Multi-Port Listening (Port Hopping)
+    # Port 443 - Primary HTTPS (TCP)
+    server {
+        listen 443 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 80 - HTTP (TCP) - bypasses HTTPS-only filters
+    server {
+        listen 80 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 53 - DNS (TCP) - disguises as DNS traffic
+    server {
+        listen 53 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 53 - DNS (UDP) - disguises as DNS traffic
+    server {
+        listen 53 udp reuseport;
+        proxy_pass conduit_udp_backend;
+        proxy_timeout 60s;
+        proxy_responses 1;
+    }
+    
+    # Port 2053 - Alternative HTTPS (TCP) - CloudFlare-like
+    server {
+        listen 2053 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 8880 - Alt-HTTP (TCP) - another common bypass port
+    server {
+        listen 8880 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+    
+    # Port 5566 - Standard Psiphon UDP
+    server {
+        listen 5566 udp reuseport;
+        proxy_pass conduit_udp_backend;
+        proxy_timeout 60s;
+        proxy_responses 1;
+    }
+    
+    # Port 5566 - Standard Psiphon TCP
+    server {
+        listen 5566 reuseport;
+        proxy_pass conduit_backend;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
 }
-
-server {
-    listen ${NGINX_TCP_PORT};
-    proxy_pass conduit_tcp_backend;
-    proxy_timeout 10m;
-    proxy_connect_timeout 30s;
-}
-
-server {
-    listen ${NGINX_UDP_PORT_START}-${NGINX_UDP_PORT_END} udp;
-    proxy_pass conduit_udp_backend;
-    proxy_timeout 10m;
-    proxy_responses 1;
-}
-
-error_log /var/log/nginx/conduit-stream-error.log warn;
-access_log /var/log/nginx/conduit-stream-access.log;
-NGINX_EOF
-
-    log_success "Nginx configuration generated"
+EOF
+    log_success "Nginx configuration generated for $container_count backends (Iran-Bypass: Multi-port enabled)"
     reload_nginx
 }
 
