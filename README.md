@@ -76,18 +76,22 @@ A production-grade cluster management system for Psiphon Conduit nodes with **Ng
 
 ## 📦 Quick Start
 
-### Option 1: Complete Script (Recommended)
+### Option 1: Foundation Script (Recommended)
 
-Download and deploy the unified v2.0 script with all features:
+Download and deploy the v2.0 foundation script:
 
 ```bash
-wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2-complete.sh
-sudo bash conduit-v2-complete.sh
+wget https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit-v2.0.sh
+chmod +x conduit-v2.0.sh
+sudo bash conduit-v2.0.sh start
 ```
 
 **Includes:**
-- ✅ Nginx Layer 4 Load Balancer
-- ✅ Interactive menu system
+- ✅ 8 Conduit containers (auto-configured for 4GB VPS)
+- ✅ Host networking mode for full WebRTC/QUIC support
+- ✅ Resource limits (CPU, memory, file descriptors)
+- ✅ Volume permissions auto-fix
+- ✅ Persistent node keys
 - ✅ Telegram bot integration
 - ✅ QR code generation
 - ✅ Backup/restore functionality
