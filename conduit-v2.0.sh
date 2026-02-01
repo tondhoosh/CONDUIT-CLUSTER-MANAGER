@@ -40,7 +40,7 @@
 set -euo pipefail
 
 VERSION="2.0.0-cluster"
-CONDUIT_IMAGE="psiphon/conduit:latest"
+CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 INSTALL_DIR="/opt/conduit"
 
 # v2.0 Configuration Defaults (Hardware-Optimized)
@@ -527,8 +527,8 @@ run_conduit_container() {
     # Volume mount
     docker_cmd="$docker_cmd -v \"$vname:/data\""
     
-    # Conduit arguments
-    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\" conduit"
+    # Conduit arguments (GHCR image has entrypoint set)
+    docker_cmd="$docker_cmd \"$CONDUIT_IMAGE\""
     docker_cmd="$docker_cmd --max-clients ${MAX_CLIENTS}"
     
     if [ "$BANDWIDTH" != "-1" ]; then
