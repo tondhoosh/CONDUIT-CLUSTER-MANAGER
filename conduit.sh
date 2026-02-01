@@ -2189,7 +2189,7 @@ while true; do
             print "SYNC_MARKER"
             delete from; delete to; last_sync = ts; fflush()
         }
-    }'))
+    }')
 
     # If tcpdump exits, wait and retry
     sleep 5
