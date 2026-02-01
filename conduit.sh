@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      🚀 PSIPHON CONDUIT MANAGER v1.2                             ║
+# ║      🚀 PSIPHON CONDUIT MANAGER v2.0                             ║
 # ║                                                                   ║
 # ║  One-click setup for Psiphon Conduit                              ║
 # ║                                                                   ║
@@ -842,10 +842,10 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/latest
 #
 
-VERSION="1.2"
+VERSION="2.0"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
-CONDUIT_IMAGE="ghcr.io/ssmirr/conduit/conduit:latest"
+CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
 
 # Colors
 RED='\033[0;31m'
@@ -991,17 +991,20 @@ run_conduit_container() {
     local resource_args=""
     [ -n "$cpus" ] && resource_args+="--cpus $cpus "
     [ -n "$mem" ] && resource_args+="--memory $mem "
+    # Ensure volume permissions
+    docker volume create "$vol" 2>/dev/null || true
+    docker run --rm -v "${vol}:/data" alpine chmod 777 /data 2>/dev/null || true
     # shellcheck disable=SC2086
     docker run -d \
         --name "$name" \
         --restart unless-stopped \
         --log-opt max-size=15m \
         --log-opt max-file=3 \
-        -v "${vol}:/home/conduit/data" \
+        -v "${vol}:/data" \
         --network host \
         $resource_args \
         "$CONDUIT_IMAGE" \
-        start --max-clients "$mc" --bandwidth "$bw" --stats-file
+        start -d /data
 }
 
 print_header() {
@@ -6748,7 +6751,7 @@ SVCEOF
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 1.2
+# REACHED END OF SCRIPT - VERSION 2.0
 # ###############################################################################
 main "$@"
 
