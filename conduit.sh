@@ -5949,34 +5949,49 @@ show_claim_info() {
     echo -e "${BOLD}  NODE CLAIMING INFORMATION${NC}"
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
+    echo -e "  ${YELLOW}Checking cluster status... (it may take a moment)${NC}"
+    
+    # Pre-fetch all running containers once to avoid repeated slow calls
+    local running_containers=""
+    running_containers=$(timeout 10 docker ps --format '{{.Names}}' | grep -E "^conduit(-[0-9]+)?$") || true
+    
+    # Clear "Checking status" line
+    echo -e "\033[1A\033[K" 
+    
     echo -e "${BOLD}Psiphon Dashboard Claiming:${NC}"
-    # Try to get mnemonic from the first container
-    if docker ps -q --filter "name=conduit" | grep -q .; then
-         local mnemonic=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep mnemonic | cut -d'"' -f4)
+    if echo "$running_containers" | grep -q "^conduit$"; then
+         # Get mnemonic
+         local mnemonic=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep mnemonic | awk -F'"' '{print $4}')
          if [ -n "$mnemonic" ]; then
              echo -e "  • Mnemonic: ${GREEN}$mnemonic${NC}"
          else
              echo -e "  • Mnemonic: ${YELLOW}Not found in key file${NC}"
          fi
     else
-         echo -e "  • Mnemonic: ${RED}Conduit container not running${NC}"
+         echo -e "  • Mnemonic: ${RED}Primary node not running${NC}"
     fi
+    
     echo ""
-    echo -e "${BOLD}Ryve App Claiming (Multi-Core):${NC}"
+    echo -e "${BOLD}Ryve App Claiming (Multi-Node):${NC}"
+    local count=0
     for i in $(seq 1 $CONTAINER_COUNT); do
         local cname=$(get_container_name $i)
         printf "  • Node %-2s (%s): " "$i" "$cname"
-        if ! docker ps | grep -q "$cname"; then
-            echo -e "${RED}Not Running${NC}"
-            continue
-        fi
-        local id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
-        if [ -n "$id" ]; then
-            echo -e "${GREEN}${id}${NC}"
+        if echo "$running_containers" | grep -q "^${cname}$"; then
+            local id=$(timeout 15 docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
+            if [ -n "$id" ]; then
+                echo -e "${GREEN}${id}${NC}"
+                ((count++))
+            else
+                echo -e "${YELLOW}Initialising or Busy${NC}"
+            fi
         else
-            echo -e "${YELLOW}Initialising...${NC}"
+            echo -e "${RED}Not Running${NC}"
         fi
     done
+    
+    [ $count -eq 0 ] && echo -e "\n  ${YELLOW}Tip: Use 'conduit start' after installation to initialize nodes.${NC}"
+    
     echo ""
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
