@@ -799,11 +799,14 @@ generate_nginx_conf() {
     # If NOT found, we must explicitly load it from known paths
     if [ ! -d "/etc/nginx/modules-enabled" ] || ! grep -r "ngx_stream_module" /etc/nginx/modules-enabled/ &>/dev/null; then
          if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n${modules_config}"
+            modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;
+${modules_config}"
         elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;\n${modules_config}"
+            modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;
+${modules_config}"
         elif [ -f "/usr/local/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config="load_module /usr/local/nginx/modules/ngx_stream_module.so;\n${modules_config}"
+            modules_config="load_module /usr/local/nginx/modules/ngx_stream_module.so;
+${modules_config}"
         fi
     fi
     
