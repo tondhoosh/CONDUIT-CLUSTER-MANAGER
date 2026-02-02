@@ -895,14 +895,7 @@ $(echo -e "$udp_upstreams")
         proxy_timeout 60s;
     }
     
-    # Port 8880 - Alt-HTTP (TCP)
-    server {
-        listen 8880 reuseport;
-        listen [::]:8880 reuseport;
-        proxy_pass conduit_backend;
-        proxy_connect_timeout 10s;
-        proxy_timeout 60s;
-    }
+
     
     # Port 5566 - Standard Psiphon UDP
     server {
