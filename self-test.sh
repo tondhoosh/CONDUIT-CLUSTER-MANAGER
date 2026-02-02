@@ -48,6 +48,31 @@ INSTALL_DIR="/opt/conduit"
 [ -f "$INSTALL_DIR/settings.conf" ] && source "$INSTALL_DIR/settings.conf"
 CONTAINER_COUNT="${CONTAINER_COUNT:-8}"
 
+# TC-000: PRE-FLIGHT NETWORK CHECKS (INTERNAL/EXTERNAL)
+info "TC-000: Verifying Network Configuration..."
+
+# 1. DNS Check
+if grep -qE "8.8.8.8|1.1.1.1" /etc/resolv.conf; then
+    pass "DNS Configured: Secure Resolver Found"
+else
+    warn "DNS Verification: Using Standard/ISP Resolver (Check /etc/resolv.conf)"
+fi
+
+# 2. External Connectivity (GitHub Check)
+if curl -s -I https://github.com | grep -q "200 OK\|301 Moved"; then
+    pass "External Connectivity: GitHub Reachable"
+else
+    fail "External Connectivity: GitHub Unreachable (Possible DNS/Network Block)"
+fi
+
+# 3. Internal Bridge Check (Docker)
+if ip addr show docker0 > /dev/null 2>&1; then
+    pass "Internal Networking: Docker Bridge (docker0) Active"
+else
+    fail "Internal Networking: Docker Bridge Missing or Down"
+fi
+
+
 # TC-001: KERNEL OPTIMIZATION (BBR)
 info "TC-001: Verifying Network Stack Optimization..."
 tcp_cc=$(sysctl -n net.ipv4.tcp_congestion_control)
