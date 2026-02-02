@@ -24,6 +24,8 @@
 #
 
 set -eo pipefail
+# Enable trace debugging for silent failure investigation
+set -x
 
 # Require bash
 if [ -z "$BASH_VERSION" ]; then
