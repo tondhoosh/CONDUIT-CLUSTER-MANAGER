@@ -5944,58 +5944,110 @@ container_details() {
 }
 
 show_claim_info() {
+    while true; do
+        clear
+        echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}  NODE CLAIMING INFORMATION HUB${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "  ${YELLOW}Scanning cluster status...${NC}"
+        
+        local running_containers=""
+        running_containers=$(timeout 5 docker ps --format '{{.Names}}' | grep -E "^conduit(-[0-9]+)?$") || true
+        
+        echo -e "\033[1A\033[K" # Clear status line
+        
+        echo -e "  ${BOLD}%-4s %-12s %-15s %-20s${NC}" "#" "Node Name" "Status" "Ryve Proxy ID"
+        echo -e "  ${CYAN}──────────────────────────────────────────────────────────────${NC}"
+        
+        for i in $(seq 1 $CONTAINER_COUNT); do
+            local cname=$(get_container_name $i)
+            local status="${RED}Stopped${NC}"
+            local ryve_id="${DIM}-n/a-${NC}"
+            
+            if echo "$running_containers" | grep -q "^${cname}$"; then
+                status="${GREEN}Running${NC}"
+                ryve_id=$(timeout 3 docker exec "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
+                [ -z "$ryve_id" ] && ryve_id="${YELLOW}Initializing${NC}"
+            fi
+            
+            printf "  ${GREEN}%-4s${NC} %-12s %-15s %-20s\n" "$i" "$cname" "$status" "$ryve_id"
+        done
+        
+        echo -e "${CYAN}──────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        echo -e "  ${BOLD}Commands:${NC}"
+        echo -e "  • Enter a ${GREEN}number${NC} to view full details (QR, Mnemonic, Node ID)"
+        echo -e "  • Press ${GREEN}[b]${NC} to return to main menu"
+        echo ""
+        read -p "  Selection: " choice < /dev/tty || break
+        
+        if [ "$choice" = "b" ] || [ "$choice" = "B" ] || [ -z "$choice" ]; then
+            break
+        fi
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$CONTAINER_COUNT" ]; then
+            show_node_details "$choice"
+        else
+            echo -e "  ${RED}Invalid selection.${NC}"
+            sleep 1
+        fi
+    done
+}
+
+show_node_details() {
+    local idx=$1
+    local cname=$(get_container_name $idx)
     clear
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}  NODE CLAIMING INFORMATION${NC}"
+    echo -e "${BOLD}  DETAILS FOR NODE: $cname${NC}"
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${YELLOW}Checking cluster status... (it may take a moment)${NC}"
     
-    # Pre-fetch all running containers once to avoid repeated slow calls
-    local running_containers=""
-    running_containers=$(timeout 10 docker ps --format '{{.Names}}' | grep -E "^conduit(-[0-9]+)?$") || true
+    if ! docker ps | grep -q "$cname"; then
+        echo -e "  ${RED}Error: Container is not running.${NC}"
+        echo ""
+        read -n 1 -s -r -p "Press any key to return..." < /dev/tty
+        return
+    fi
     
-    # Clear "Checking status" line
-    echo -e "\033[1A\033[K" 
+    log_info "Extracting credentials... (please wait)"
     
-    echo -e "${BOLD}Psiphon Dashboard Claiming:${NC}"
-    if echo "$running_containers" | grep -q "^conduit$"; then
-         # Get mnemonic
-         local mnemonic=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep mnemonic | awk -F'"' '{print $4}')
-         if [ -n "$mnemonic" ]; then
-             echo -e "  • Mnemonic: ${GREEN}$mnemonic${NC}"
-         else
-             echo -e "  • Mnemonic: ${YELLOW}Not found in key file${NC}"
-         fi
-    else
-         echo -e "  • Mnemonic: ${RED}Primary node not running${NC}"
+    # 1. Psiphon Mnemonic
+    local mnemonic=$(docker exec "$cname" cat /data/conduit_key.json 2>/dev/null | grep mnemonic | awk -F'"' '{print $4}')
+    
+    # 2. Node ID (Base64)
+    local node_id=$(docker exec "$cname" cat /data/conduit_key.json 2>/dev/null | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n')
+    
+    # 3. Ryve Proxy ID
+    local ryve_id=$(docker exec "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
+    
+    clear
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  CLAIMING INFO: $cname${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  ${BOLD}Psiphon Dashboard Mnemonic:${NC}"
+    echo -e "  ${GREEN}${mnemonic:-N/A}${NC}"
+    echo ""
+    echo -e "  ${BOLD}Psiphon Node ID:${NC}"
+    echo -e "  ${CYAN}${node_id:-N/A}${NC}"
+    echo ""
+    echo -e "  ${BOLD}Ryve App Proxy ID:${NC}"
+    echo -e "  ${MAGENTA}${ryve_id:-Initializing...}${NC}"
+    echo ""
+    
+    if [ -n "$node_id" ] && command -v qrencode &>/dev/null; then
+        echo -e "  ${BOLD}QR Code (Scan in Dashboard/App):${NC}"
+        echo "$node_id" | qrencode -t ANSIUTF8
+    elif ! command -v qrencode &>/dev/null; then
+        echo -e "  ${YELLOW}(qrencode not installed, barcode unavailable)${NC}"
     fi
     
     echo ""
-    echo -e "${BOLD}Ryve App Claiming (Multi-Node):${NC}"
-    local count=0
-    for i in $(seq 1 $CONTAINER_COUNT); do
-        local cname=$(get_container_name $i)
-        printf "  • Node %-2s (%s): " "$i" "$cname"
-        if echo "$running_containers" | grep -q "^${cname}$"; then
-            local id=$(timeout 15 docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
-            if [ -n "$id" ]; then
-                echo -e "${GREEN}${id}${NC}"
-                ((count++))
-            else
-                echo -e "${YELLOW}Initialising or Busy${NC}"
-            fi
-        else
-            echo -e "${RED}Not Running${NC}"
-        fi
-    done
-    
-    [ $count -eq 0 ] && echo -e "\n  ${YELLOW}Tip: Use 'conduit start' after installation to initialize nodes.${NC}"
-    
-    echo ""
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
+    read -n 1 -s -r -p "Press any key to go back to list..." < /dev/tty
 }
 
 show_menu() {
