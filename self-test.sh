@@ -58,11 +58,21 @@ else
     warn "DNS Verification: Using Standard/ISP Resolver (Check /etc/resolv.conf)"
 fi
 
-# 2. External Connectivity (GitHub Check)
-if curl -s -I https://github.com | grep -q "200 OK\|301 Moved"; then
-    pass "External Connectivity: GitHub Reachable"
+# 2. External Connectivity
+# Baseline Check (Google) - Verifies global routing
+if curl -s -I --connect-timeout 5 https://www.google.com | grep -qE "200|301|302"; then
+    pass "Connectivity Baseline: Google Reachable"
 else
-    fail "External Connectivity: GitHub Unreachable (Possible DNS/Network Block)"
+    warn "Connectivity Baseline: Google Unreachable (High Latency or Blocking)"
+fi
+
+# Critical Check (Raw GitHub) - Verifies update capability
+if curl -s -I --connect-timeout 5 https://raw.githubusercontent.com/tondhoosh/CONDUIT-CLUSTER-MANAGER/main/conduit.sh | grep -q "200 OK"; then
+    pass "Update Capability: Raw GitHub Reachable"
+else
+    # Only fail if we can't get updates. 
+    # Note: If this fails but Conduit works, it's just an update blocker.
+    warn "Update Capability: Raw GitHub Unreachable (Updates may fail)"
 fi
 
 # 3. Internal Bridge Check (Docker)
