@@ -964,6 +964,9 @@ run_conduit_container() {
     # Iran-Bypass: Generate random 16-character obfuscated SSH key
     local obfuscation_key=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
     
+    # Self-Healing: Remove ghost container if it exists
+    docker rm -f "$cname" &>/dev/null || true
+
     local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/tcp"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/udp"
