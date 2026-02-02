@@ -762,6 +762,16 @@ generate_nginx_conf() {
     if ! command -v nginx &>/dev/null; then
         install_nginx
     fi
+    
+    # Optimize Nginx Systemd Service (Fixes worker_connections error)
+    if command -v systemctl &>/dev/null; then
+        mkdir -p /etc/systemd/system/nginx.service.d
+        cat > /etc/systemd/system/nginx.service.d/override.conf <<EOF
+[Service]
+LimitNOFILE=65535
+EOF
+        systemctl daemon-reload
+    fi
 
     log_info "Generating Nginx Layer 4 Load Balancer configuration..."
     
