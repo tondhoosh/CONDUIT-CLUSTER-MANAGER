@@ -787,25 +787,23 @@ generate_nginx_conf() {
     fi
     
     # Detect proper module loading method
-    local modules_config=""
     # Detect proper module loading method
     local modules_config=""
     
-    # Check if stream module is effectively enabled in modules-enabled
-    if [ -d "/etc/nginx/modules-enabled" ] && grep -r "ngx_stream_module" /etc/nginx/modules-enabled/ &>/dev/null; then
-        # Debian/Ubuntu: Standard include works because module ref is present
+    # Always include standard modules-enabled if it exists (Debian/Ubuntu standard)
+    if [ -d "/etc/nginx/modules-enabled" ]; then
         modules_config="include /etc/nginx/modules-enabled/*.conf;"
-    else
-        # Fallback: Explicitly load stream module if found (fixes missing symlinks on minimal installs)
-        if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
+    fi
+
+    # Check if stream module is effectively enabled in modules-enabled
+    # If NOT found, we must explicitly load it from known paths
+    if [ ! -d "/etc/nginx/modules-enabled" ] || ! grep -r "ngx_stream_module" /etc/nginx/modules-enabled/ &>/dev/null; then
+         if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
+            modules_config="load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n${modules_config}"
         elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
-        fi
-        
-        # Still include modules-enabled for other modules if dir exists
-        if [ -d "/etc/nginx/modules-enabled" ]; then
-             modules_config="${modules_config}\ninclude /etc/nginx/modules-enabled/*.conf;"
+            modules_config="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;\n${modules_config}"
+        elif [ -f "/usr/local/nginx/modules/ngx_stream_module.so" ]; then
+            modules_config="load_module /usr/local/nginx/modules/ngx_stream_module.so;\n${modules_config}"
         fi
     fi
     
