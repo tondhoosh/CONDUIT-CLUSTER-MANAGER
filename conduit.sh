@@ -405,13 +405,7 @@ LIMITS_EOF
 
 # Note: generate_nginx_conf is defined later in the script with Iran-Bypass multi-port support
 
-reload_nginx() {
-    if command -v systemctl &>/dev/null; then
-        systemctl reload nginx 2>/dev/null || systemctl restart nginx
-    else
-        nginx -s reload 2>/dev/null || nginx
-    fi
-}
+
 
 get_ram_mb() {
     local ram=""
