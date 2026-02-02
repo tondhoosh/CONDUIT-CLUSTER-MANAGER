@@ -964,7 +964,7 @@ run_conduit_container() {
     local docker_cmd="docker run -d --name \"$cname\" --restart unless-stopped"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/tcp"
     docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:443/udp"
-    docker_cmd="$docker_cmd -p 127.0.0.1:${backend_port}:16384-32768/udp"
+
     [ -n "$cpus" ] && docker_cmd="$docker_cmd --cpus=\"${cpus}\""
     [ -n "$mem" ] && docker_cmd="$docker_cmd --memory=\"${mem}\""
     docker_cmd="$docker_cmd --ulimit nofile=${CONTAINER_ULIMIT_NOFILE}:${CONTAINER_ULIMIT_NOFILE}"
