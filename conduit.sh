@@ -788,22 +788,22 @@ generate_nginx_conf() {
     
     # Detect proper module loading method
     # Detect proper module loading method
-    local modules_config=""
+    local modules_load=""
+    local modules_include=""
     
-    # Always include standard modules-enabled if it exists (Debian/Ubuntu standard)
+    # Always include standard modules-enabled if it exists
     if [ -d "/etc/nginx/modules-enabled" ]; then
-        modules_config="include /etc/nginx/modules-enabled/*.conf;"
+        modules_include="include /etc/nginx/modules-enabled/*.conf;"
     fi
 
-    # Check if stream module is effectively enabled in modules-enabled
-    # If NOT found, we must explicitly load it from known paths
+    # Check if stream module is effectively enabled. If not, explicitly load it.
     if [ ! -d "/etc/nginx/modules-enabled" ] || ! grep -r "ngx_stream_module" /etc/nginx/modules-enabled/ &>/dev/null; then
          if [ -f "/usr/lib/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config=$(printf "load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n%s" "$modules_config")
+            modules_load="load_module /usr/lib/nginx/modules/ngx_stream_module.so;"
         elif [ -f "/usr/lib64/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config=$(printf "load_module /usr/lib64/nginx/modules/ngx_stream_module.so;\n%s" "$modules_config")
+            modules_load="load_module /usr/lib64/nginx/modules/ngx_stream_module.so;"
         elif [ -f "/usr/local/nginx/modules/ngx_stream_module.so" ]; then
-            modules_config=$(printf "load_module /usr/local/nginx/modules/ngx_stream_module.so;\n%s" "$modules_config")
+            modules_load="load_module /usr/local/nginx/modules/ngx_stream_module.so;"
         fi
     fi
     
@@ -813,7 +813,8 @@ generate_nginx_conf() {
 # Auto-generated configuration with Iran-Bypass Enhancements
 
 # Load Modules
-${modules_config}
+${modules_load}
+${modules_include}
 
 user ${nginx_user};
 worker_processes auto;
