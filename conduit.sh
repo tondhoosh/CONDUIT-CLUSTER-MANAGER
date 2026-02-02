@@ -1180,10 +1180,11 @@ create_management_script() {
 # Reference: https://github.com/ssmirr/conduit/releases/latest
 #
 
-VERSION="2.0"
+VERSION="v2.5-iran-ipv6"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
 BACKUP_DIR="$INSTALL_DIR/backups"
 CONDUIT_IMAGE="ghcr.io/psiphon-inc/conduit/cli:latest"
+BACKEND_PORT_START=8081
 
 # Colors
 RED='\033[0;31m'
@@ -1322,7 +1323,7 @@ run_conduit_container() {
     local bw=$(get_container_bandwidth $idx)
     local cpus=$(get_container_cpus $idx)
     local mem=$(get_container_memory $idx)
-    local port=$((8080 + idx))
+    local port=$((BACKEND_PORT_START + idx - 1))
 
     # Remove any existing container with the same name to avoid conflicts
     if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
@@ -3117,7 +3118,7 @@ stop_conduit() {
         fi
     done
     # Also stop any extra containers beyond current count (from previous scaling)
-    for i in $(seq $((CONTAINER_COUNT + 1)) 5); do
+    for i in $(seq $((CONTAINER_COUNT + 1)) 40); do
         local name=$(get_container_name $i)
         if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
             docker stop "$name" 2>/dev/null || true
@@ -3248,7 +3249,7 @@ restart_conduit() {
         fi
     done
     # Remove extra containers beyond current count
-    for i in $(seq $((CONTAINER_COUNT + 1)) 5); do
+    for i in $(seq $((CONTAINER_COUNT + 1)) 40); do
         local name=$(get_container_name $i)
         if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
             docker stop "$name" 2>/dev/null || true
@@ -3361,7 +3362,7 @@ change_settings() {
         # Apply to all = update global defaults and clear per-container overrides
         [ -n "$valid_mc" ] && MAX_CLIENTS="$valid_mc"
         [ -n "$valid_bw" ] && BANDWIDTH="$valid_bw"
-        for i in $(seq 1 5); do
+        for i in $(seq 1 40); do
             unset "MAX_CLIENTS_${i}" 2>/dev/null || true
             unset "BANDWIDTH_${i}" 2>/dev/null || true
         done
@@ -3439,7 +3440,7 @@ change_resource_limits() {
     if [ "$target" = "c" ] || [ "$target" = "C" ]; then
         DOCKER_CPUS=""
         DOCKER_MEMORY=""
-        for i in $(seq 1 5); do
+        for i in $(seq 1 40); do
             unset "CPUS_${i}" 2>/dev/null || true
             unset "MEMORY_${i}" 2>/dev/null || true
         done
@@ -3547,7 +3548,7 @@ change_resource_limits() {
     if [ "$target" = "a" ] || [ "$target" = "A" ]; then
         [ -n "$valid_cpus" ] && DOCKER_CPUS="$valid_cpus"
         [ -n "$valid_mem" ] && DOCKER_MEMORY="$valid_mem"
-        for i in $(seq 1 5); do
+        for i in $(seq 1 40); do
             unset "CPUS_${i}" 2>/dev/null || true
             unset "MEMORY_${i}" 2>/dev/null || true
         done
@@ -3684,7 +3685,7 @@ uninstall_all() {
 
     echo ""
     echo -e "${BLUE}[INFO]${NC} Stopping Conduit container(s)..."
-    for i in $(seq 1 5); do
+    for i in $(seq 1 40); do
         local name=$(get_container_name $i)
         docker stop "$name" 2>/dev/null || true
         docker rm -f "$name" 2>/dev/null || true
@@ -3694,7 +3695,7 @@ uninstall_all() {
     docker rmi "$CONDUIT_IMAGE" 2>/dev/null || true
 
     echo -e "${BLUE}[INFO]${NC} Removing Conduit data volume(s)..."
-    for i in $(seq 1 5); do
+    for i in $(seq 1 40); do
         local vol=$(get_volume_name $i)
         docker volume rm "$vol" 2>/dev/null || true
     done
@@ -3801,7 +3802,7 @@ manage_containers() {
             "#" "Container" "Status" "Clients" "Up" "Down" "CPU" "RAM"
         echo -e "  ${CYAN}─────────────────────────────────────────────────────────${NC}${EL}"
 
-        for ci in $(seq 1 5); do
+        for ci in $(seq 1 $CONTAINER_COUNT); do
             local cname=$(get_container_name $ci)
             local status_text status_color
             local c_clients="-" c_up="-" c_down="-" c_cpu="-" c_ram="-"
@@ -4394,7 +4395,7 @@ DOCKER_CPUS=${DOCKER_CPUS:-}
 DOCKER_MEMORY=${DOCKER_MEMORY:-}
 EOF
     # Save per-container overrides
-    for i in $(seq 1 5); do
+    for i in $(seq 1 40); do
         local mc_var="MAX_CLIENTS_${i}"
         local bw_var="BANDWIDTH_${i}"
         local cpu_var="CPUS_${i}"
@@ -5948,42 +5949,36 @@ show_claim_info() {
     echo -e "${BOLD}  NODE CLAIMING INFORMATION${NC}"
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "${BOLD}Server IP:${NC} $(curl -s ifconfig.me)"
-    echo -e "${BOLD}Port:${NC} 443"
-    echo ""
-    echo -e "${BOLD}Mnemonic:${NC}"
+    echo -e "${BOLD}Psiphon Dashboard Claiming:${NC}"
     # Try to get mnemonic from the first container
     if docker ps -q --filter "name=conduit" | grep -q .; then
          local mnemonic=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep mnemonic | cut -d'"' -f4)
          if [ -n "$mnemonic" ]; then
-             echo -e "${GREEN}$mnemonic${NC}"
+             echo -e "  • Mnemonic: ${GREEN}$mnemonic${NC}"
          else
-             echo -e "${YELLOW}Could not retrieve mnemonic (key file may use different format)${NC}"
+             echo -e "  • Mnemonic: ${YELLOW}Not found in key file${NC}"
          fi
     else
-         echo -e "${RED}Conduit container not running. Cannot retrieve mnemonic.${NC}"
+         echo -e "  • Mnemonic: ${RED}Conduit container not running${NC}"
     fi
     echo ""
-    echo -e "${YELLOW}Use this mnemonic to claim your node in the Psiphon dashboard${NC}"
-    echo ""
-    
-    # Show QR Code if available
-    echo -e "${BOLD}QR Code:${NC}"
-    if command -v qrencode &>/dev/null; then
-        local node_id_file="$INSTALL_DIR/backups/latest_node_id"
-        # We try to get ID from running container if possible
-        if docker ps -q --filter "name=conduit" | grep -q .; then
-             local node_id=$(docker exec conduit cat /data/conduit_key.json 2>/dev/null | grep "privateKeyBase64" | awk -F'"' '{print $4}' | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '=\n')
-             if [ -n "$node_id" ]; then
-                echo -n "$node_id" | qrencode -t ANSIUTF8
-                echo ""
-                echo -e "Node ID: ${CYAN}${node_id}${NC}"
-             fi
+    echo -e "${BOLD}Ryve App Claiming (Multi-Core):${NC}"
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local cname=$(get_container_name $i)
+        printf "  • Node %-2s (%s): " "$i" "$cname"
+        if ! docker ps | grep -q "$cname"; then
+            echo -e "${RED}Not Running${NC}"
+            continue
         fi
-    else
-        echo "qrencode not installed."
-    fi
-    
+        local id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
+        if [ -n "$id" ]; then
+            echo -e "${GREEN}${id}${NC}"
+        else
+            echo -e "${YELLOW}Initialising...${NC}"
+        fi
+    done
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
     read -n 1 -s -r -p "Press any key to return..." < /dev/tty || true
 }
@@ -6847,6 +6842,7 @@ case "${1:-menu}" in
     restore)  restore_key ;;
     scale)    manage_containers ;;
     about)    show_about ;;
+    test)      bash "$INSTALL_DIR/self-test.sh" ;;
     uninstall) uninstall_all ;;
     version|-v|--version) show_version ;;
     help|-h|--help) show_help ;;
@@ -6868,6 +6864,14 @@ MANAGEMENT
     ln -s "$INSTALL_DIR/conduit" /usr/local/bin/conduit
     
     log_success "Management script installed: conduit"
+    
+    # Install self-test suite if present in current directory
+    if [ -f "./self-test.sh" ]; then
+        cp -f "./self-test.sh" "$INSTALL_DIR/self-test.sh"
+        chmod +x "$INSTALL_DIR/self-test.sh"
+        ln -sf "$INSTALL_DIR/self-test.sh" /usr/local/bin/conduit-test
+        log_success "QA Suite installed: conduit-test"
+    fi
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -6947,10 +6951,9 @@ uninstall() {
     
     echo ""
     log_info "Stopping Conduit container(s)..."
-    for i in 1 2 3 4 5; do
-        local cname="conduit"
-        local vname="conduit-data"
-        [ "$i" -gt 1 ] && cname="conduit-${i}" && vname="conduit-data-${i}"
+    for i in $(seq 1 40); do
+        local cname=$(get_container_name $i)
+        local vname=$(get_volume_name $i)
         docker stop "$cname" 2>/dev/null || true
         docker rm -f "$cname" 2>/dev/null || true
         docker volume rm "$vname" 2>/dev/null || true
@@ -7161,9 +7164,10 @@ SVCEOF
     # Clean up any existing containers from previous install/scaling
     docker stop conduit 2>/dev/null || true
     docker rm -f conduit 2>/dev/null || true
-    for i in 2 3 4 5; do
-        docker stop "conduit-${i}" 2>/dev/null || true
-        docker rm -f "conduit-${i}" 2>/dev/null || true
+    for i in $(seq 2 40); do
+        local cname=$(get_container_name $i)
+        docker stop "$cname" 2>/dev/null || true
+        docker rm -f "$cname" 2>/dev/null || true
     done
     run_conduit
     
@@ -7189,49 +7193,8 @@ SVCEOF
     fi
 }
 #
-# REACHED END OF SCRIPT - VERSION 2.3-iran-fix2
+# REACHED END OF SCRIPT - v2.5-iran-ipv6
 # ###############################################################################
-
-show_claim_info() {
-    clear
-    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}  RYVE CLAIM IDs (MNEMONICS)${NC}"
-    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo -e "  To claim your rewards, enter these IDs in the Ryve app:"
-    echo ""
-    
-    for i in $(seq 1 $CONTAINER_COUNT); do
-        local cname=$(get_container_name $i)
-        printf "  • Container %-2s (%s): " "$i" "$cname"
-        
-        if ! docker ps | grep -q "$cname"; then
-            echo -e "${RED}Not Running${NC}"
-            continue
-        fi
-        
-        # Extract Proxy ID using implicit 'yes' to bypass interactive prompt
-        local id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>/dev/null | grep "Proxy ID:" | awk '{print $3}')
-        
-        if [ -n "$id" ]; then
-            echo -e "${GREEN}${id}${NC}"
-        else
-            echo -e "${YELLOW}Retrying...${NC}"
-            # Retry once with longer timeout or different method if needed
-            id=$(printf 'yes\n' | docker exec -i "$cname" conduit ryve-claim 2>&1 | grep "Proxy ID:" | awk '{print $3}')
-            if [ -n "$id" ]; then
-                 echo -e "                         ${GREEN}${id}${NC}"
-            else
-                 echo -e "${RED}Unavailable (Check logs)${NC}"
-            fi
-        fi
-    done
-    
-    echo ""
-    echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    read -n 1 -s -r -p "Press any key to return..." < /dev/tty
-}
 
 main "$@"
 

@@ -43,6 +43,11 @@ else
     echo "========================================================="
 fi
 
+# Load Settings
+INSTALL_DIR="/opt/conduit"
+[ -f "$INSTALL_DIR/settings.conf" ] && source "$INSTALL_DIR/settings.conf"
+CONTAINER_COUNT="${CONTAINER_COUNT:-8}"
+
 # TC-001: KERNEL OPTIMIZATION (BBR)
 info "TC-001: Verifying Network Stack Optimization..."
 tcp_cc=$(sysctl -n net.ipv4.tcp_congestion_control)
@@ -55,10 +60,10 @@ fi
 # TC-002: CLUSTER HEALTH & ISOLATION
 info "TC-002: Verifying Cluster Health..."
 container_count=$(docker ps --format '{{.Names}}' | grep -Ex "conduit(-[0-9]+)?" | wc -l)
-if [ "$container_count" -ge 8 ]; then
-    pass "Cluster Capacity: $container_count/8 containers active"
+if [ "$container_count" -ge "$CONTAINER_COUNT" ]; then
+    pass "Cluster Capacity: $container_count/$CONTAINER_COUNT containers active"
 else
-    fail "Cluster Degraded: Only $container_count/8 containers active"
+    fail "Cluster Degraded: Only $container_count/$CONTAINER_COUNT containers active"
 fi
 
 # Check Isolation (Localhost Binding)
@@ -111,11 +116,18 @@ fi
 
 # TC-005: FUNCTIONAL STEALTH (PROBE RESISTANCE)
 info "TC-005: Verifying Stealth Behavior (Probe Resistance)..."
-response=$(curl -I -k https://127.0.0.1 2>&1)
-if [[ "$response" == *"SSL_ERROR_SYSCALL"* ]] || [[ "$response" == *"Connection reset"* ]] || [[ "$response" == *"Empty reply"* ]]; then
-    pass "Stealth Confirmed: Server rejects non-Psiphon probes (Connection Reset)"
+response_v4=$(curl -I -k https://127.0.0.1 2>&1)
+if [[ "$response_v4" == *"SSL_ERROR_SYSCALL"* ]] || [[ "$response_v4" == *"Connection reset"* ]] || [[ "$response_v4" == *"Empty reply"* ]]; then
+    pass "IPv4 Stealth Confirmed: Connection Reset"
 else
-    warn "Stealth Anomaly: Server responded to probe: $(echo "$response" | head -1)"
+    warn "IPv4 Stealth Anomaly: Server responded to probe: $(echo "$response_v4" | head -1)"
+fi
+
+response_v6=$(curl -I -k -6 https://[::1] 2>&1)
+if [[ "$response_v6" == *"SSL_ERROR_SYSCALL"* ]] || [[ "$response_v6" == *"Connection reset"* ]] || [[ "$response_v6" == *"Empty reply"* ]]; then
+    pass "IPv6 Stealth Confirmed: Connection Reset"
+else
+    warn "IPv6 Stealth Anomaly: Server responded to probe: $(echo "$response_v6" | head -1)"
 fi
 
 # TC-006: UPSTREAM HEALTH
