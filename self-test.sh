@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🧪 Conduit V2 Architecture - Institutional Self-Testing Suite
+# Conduit V2 Architecture - Institutional Self-Testing Suite
 # Validates implementation against TEST-PLAN.md (v2.5-iran-ipv6)
 
 RED='\033[0;31m'
